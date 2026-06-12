@@ -18,6 +18,25 @@ export class MailService {
     return value.toLowerCase() === 'true';
   }
 
+  private _generateModernHtmlTemplate(title: string, content: string): string {
+    return `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; background-color: #f8f9fa; padding: 20px;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+          <div style="background-color: #007BFF; color: #ffffff; padding: 25px; text-align: center;">
+            <h1 style="margin: 0; font-size: 24px;">${title}</h1>
+          </div>
+          <div style="padding: 30px; color: #343a40;">
+            ${content}
+          </div>
+          <div style="background-color: #343a40; color: #f8f9fa; text-align: center; padding: 20px; font-size: 12px;">
+            <p style="margin: 0;">Este es un mensaje automático, por favor no respondas.</p>
+            <p style="margin: 5px 0 0;">&copy; ${new Date().getFullYear()} Reserva Horarios. Todos los derechos reservados.</p>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   async sendGuardianCredentials(email: string, password: string) {
     const host = this.configService.get<string>('SMTP_HOST');
     const port = this.configService.get<number>('SMTP_PORT', 587);
@@ -43,12 +62,15 @@ export class MailService {
       requireTLS: tls,
     });
 
+    const emailContent = `<p>Tu cuenta ha sido creada exitosamente.</p><p>Tus credenciales de acceso son:</p><p style="padding-left: 20px;"><strong>Correo:</strong> ${email}<br/><strong>Contraseña:</strong> ${password}</p><p>Puedes usar esta contraseña para iniciar sesión. Te recomendamos cambiarla después de tu primer acceso.</p>`;
+    const html = this._generateModernHtmlTemplate('¡Bienvenido a Reserva Horarios!', emailContent);
+
     await transporter.sendMail({
       from,
       to: email,
       subject: 'Credenciales de acceso - Reserva Horarios',
       text: `Tu cuenta fue creada correctamente.\n\nCorreo: ${email}\nContrasena: ${password}\n\nEsta contrasena es tu clave de acceso actual.`,
-      html: `<p>Tu cuenta fue creada correctamente.</p><p><strong>Correo:</strong> ${email}<br/><strong>Contrasena:</strong> ${password}</p><p>Esta contrasena es tu clave de acceso actual.</p>`,
+      html,
     });
   }
 
@@ -77,12 +99,15 @@ export class MailService {
       requireTLS: tls,
     });
 
+    const emailContent = `<p>Se ha restablecido tu contraseña a petición de un administrador.</p><p>Tu nueva contraseña es:</p><p style="padding-left: 20px;"><strong>Nueva Contraseña:</strong> ${password}</p><p>Usa esta nueva contraseña para acceder a tu cuenta. Por seguridad, te recomendamos cambiarla lo antes posible.</p>`;
+    const html = this._generateModernHtmlTemplate('Restablecimiento de Contraseña', emailContent);
+
     await transporter.sendMail({
       from,
       to: email,
       subject: 'Nueva contrasena - Reserva Horarios',
       text: `Tu contrasena fue regenerada por un administrador.\n\nCorreo: ${email}\nNueva contrasena: ${password}`,
-      html: `<p>Tu contrasena fue regenerada por un administrador.</p><p><strong>Correo:</strong> ${email}<br/><strong>Nueva contrasena:</strong> ${password}</p>`,
+      html,
     });
   }
 }
