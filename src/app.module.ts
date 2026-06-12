@@ -6,6 +6,8 @@ import { ReservationsModule } from './reservations/reservations.module';
 import { DatabaseModule } from './database/database.module';
 import { ConfigModule } from '@nestjs/config';
 import { GuardiansModule } from './guardians/guardians.module';
+import { UsersModule } from './users/users.module';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
   imports: [
@@ -15,6 +17,8 @@ import { GuardiansModule } from './guardians/guardians.module';
     ConfigModule.forRoot({
       isGlobal: true, // Makes ConfigModule available globally
     }),
+    UsersModule,
+    AuthModule,
     GuardiansModule,
   ],
   controllers: [AppController],
