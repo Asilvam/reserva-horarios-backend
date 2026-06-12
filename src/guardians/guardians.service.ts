@@ -1,12 +1,18 @@
 import { Injectable, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import * as bcrypt from 'bcrypt';
 import { CreateGuardianDto } from './dto/create-guardian.dto';
 import { Guardian } from './entities/guardian.entity';
+import { UsersService } from '../users/users.service';
+import { generateGuardianPassword } from '../common/security/password-generator';
 
 @Injectable()
 export class GuardiansService {
-  constructor(@InjectModel(Guardian.name) private guardianModel: Model<Guardian>) {}
+  constructor(
+    @InjectModel(Guardian.name) private guardianModel: Model<Guardian>,
+    private usersService: UsersService,
+  ) {}
 
   async create(createGuardianDto: CreateGuardianDto): Promise<Guardian> {
     // Verificar si el apoderado ya existe por su RUT
@@ -35,8 +41,20 @@ export class GuardiansService {
       }
     }
 
+    const tempPassword = generateGuardianPassword();
+    const passwordHash = await bcrypt.hash(tempPassword, 10);
+
     const newGuardian = new this.guardianModel(createGuardianDto);
-    return await newGuardian.save();
+    const savedGuardian = await newGuardian.save();
+
+    try {
+      await this.usersService.createGuardianUser(savedGuardian.email, savedGuardian.id, passwordHash);
+    } catch (error) {
+      await this.guardianModel.findByIdAndDelete(savedGuardian.id);
+      throw error;
+    }
+
+    return savedGuardian;
   }
 
   async findAll(): Promise<Guardian[]> {

@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { User } from './entities/user.entity';
 import { Role } from '../auth/enums/role.enum';
 
@@ -28,6 +28,25 @@ export class UsersService {
       email: normalizedEmail,
       passwordHash,
       role: Role.Admin,
+      isActive: true,
+    });
+
+    return user.save();
+  }
+
+  async createGuardianUser(email: string, guardianId: string, passwordHash: string) {
+    const normalizedEmail = email.toLowerCase();
+    const existing = await this.findByEmail(normalizedEmail);
+
+    if (existing) {
+      throw new ConflictException('Ya existe un usuario con ese correo.');
+    }
+
+    const user = new this.userModel({
+      email: normalizedEmail,
+      passwordHash,
+      role: Role.Guardian,
+      guardianId: new Types.ObjectId(guardianId),
       isActive: true,
     });
 
