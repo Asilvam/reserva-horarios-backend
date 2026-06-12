@@ -17,6 +17,11 @@ export class Reservation extends Document {
 
   @Prop({ required: true })
   totalSpotsConsumed: number;
+
+  @Prop({ required: true })
+  reservationDay: Date;
 }
 
 export const ReservationSchema = SchemaFactory.createForClass(Reservation);
+
+ReservationSchema.index({ guardianId: 1, reservationDay: 1 }, { unique: true });

@@ -20,6 +20,19 @@ export class ReservationsService {
 
     const schedule = await this.scheduleModel.findById(dto.scheduleId);
     if (!schedule) throw new BadRequestException('Horario no encontrado');
+
+    const reservationDay = new Date(schedule.startTime);
+    reservationDay.setUTCHours(0, 0, 0, 0);
+
+    const existingReservationForDay = await this.reservationModel.exists({
+      guardianId: dto.guardianId,
+      reservationDay,
+    });
+
+    if (existingReservationForDay) {
+      throw new ConflictException('El apoderado ya tiene una reserva para ese dia.');
+    }
+
     if (dto.attendingDependents.length > schedule.maxDependentsPerReservation) {
       throw new BadRequestException(`Máximo ${schedule.maxDependentsPerReservation} cargas permitidas.`);
     }
@@ -47,9 +60,21 @@ export class ReservationsService {
     const newReservation = new this.reservationModel({
       ...dto,
       totalSpotsConsumed: spotsToConsume,
+      reservationDay,
     });
 
-    return await newReservation.save();
+    try {
+      return await newReservation.save();
+    } catch (error) {
+      if (error?.code === 11000) {
+        await this.scheduleModel.findByIdAndUpdate(dto.scheduleId, {
+          $inc: { availableSpots: spotsToConsume },
+        });
+        throw new ConflictException('El apoderado ya tiene una reserva para ese dia.');
+      }
+
+      throw error;
+    }
   }
 
   findAll() {
