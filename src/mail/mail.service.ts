@@ -8,12 +8,24 @@ export class MailService {
 
   constructor(private readonly configService: ConfigService) {}
 
+  private getBoolean(key: string, defaultValue: boolean): boolean {
+    const value = this.configService.get<string>(key);
+
+    if (value === undefined) {
+      return defaultValue;
+    }
+
+    return value.toLowerCase() === 'true';
+  }
+
   async sendGuardianCredentials(email: string, password: string) {
     const host = this.configService.get<string>('SMTP_HOST');
     const port = this.configService.get<number>('SMTP_PORT', 587);
     const user = this.configService.get<string>('SMTP_USER');
     const pass = this.configService.get<string>('SMTP_PASS');
     const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
+    const secure = this.getBoolean('MAIL_SECURE', port === 465);
+    const tls = this.getBoolean('MAIL_TLS', true);
 
     if (!host || !user || !pass) {
       this.logger.warn('SMTP no configurado. Correo omitido.');
@@ -23,11 +35,12 @@ export class MailService {
     const transporter = nodemailer.createTransport({
       host,
       port,
-      secure: port === 465,
+      secure,
       auth: {
         user,
         pass,
       },
+      requireTLS: tls,
     });
 
     await transporter.sendMail({
@@ -45,6 +58,8 @@ export class MailService {
     const user = this.configService.get<string>('SMTP_USER');
     const pass = this.configService.get<string>('SMTP_PASS');
     const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
+    const secure = this.getBoolean('MAIL_SECURE', port === 465);
+    const tls = this.getBoolean('MAIL_TLS', true);
 
     if (!host || !user || !pass) {
       this.logger.warn('SMTP no configurado. Correo de reset omitido.');
@@ -54,11 +69,12 @@ export class MailService {
     const transporter = nodemailer.createTransport({
       host,
       port,
-      secure: port === 465,
+      secure,
       auth: {
         user,
         pass,
       },
+      requireTLS: tls,
     });
 
     await transporter.sendMail({

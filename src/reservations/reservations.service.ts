@@ -4,8 +4,16 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Reservation } from './entities/reservation.entity';
 import { Schedule } from '../schedules/entities/schedule.entity';
-import { Injectable, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { GuardiansService } from '../guardians/guardians.service';
+import { AuthUser } from '../auth/interfaces/auth-user.interface';
+import { Role } from '../auth/enums/role.enum';
 
 @Injectable()
 export class ReservationsService {
@@ -99,7 +107,32 @@ export class ReservationsService {
     return `This action updates a #${id} reservation`;
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} reservation`;
+  async remove(id: string, authUser: AuthUser) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Id de reserva invalido');
+    }
+
+    const reservation = await this.reservationModel.findById(id).exec();
+
+    if (!reservation) {
+      throw new NotFoundException('Reserva no encontrada');
+    }
+
+    if (authUser.role === Role.Guardian) {
+      if (!authUser.guardianId || authUser.guardianId !== reservation.guardianId.toString()) {
+        throw new ForbiddenException('No puedes eliminar una reserva de otro apoderado.');
+      }
+    }
+
+    await this.reservationModel.findByIdAndDelete(id).exec();
+    await this.scheduleModel
+      .findByIdAndUpdate(reservation.scheduleId, {
+        $inc: { availableSpots: reservation.totalSpotsConsumed },
+      })
+      .exec();
+
+    return {
+      message: 'Reserva eliminada correctamente.',
+    };
   }
 }
