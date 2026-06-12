@@ -6,12 +6,14 @@ import { CreateGuardianDto } from './dto/create-guardian.dto';
 import { Guardian } from './entities/guardian.entity';
 import { UsersService } from '../users/users.service';
 import { generateGuardianPassword } from '../common/security/password-generator';
+import { MailService } from '../mail/mail.service';
 
 @Injectable()
 export class GuardiansService {
   constructor(
     @InjectModel(Guardian.name) private guardianModel: Model<Guardian>,
     private usersService: UsersService,
+    private mailService: MailService,
   ) {}
 
   async create(createGuardianDto: CreateGuardianDto): Promise<Guardian> {
@@ -49,6 +51,7 @@ export class GuardiansService {
 
     try {
       await this.usersService.createGuardianUser(savedGuardian.email, savedGuardian.id, passwordHash);
+      await this.mailService.sendGuardianCredentials(savedGuardian.email, tempPassword);
     } catch (error) {
       await this.guardianModel.findByIdAndDelete(savedGuardian.id);
       throw error;

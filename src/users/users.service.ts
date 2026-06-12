@@ -3,6 +3,8 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { User } from './entities/user.entity';
 import { Role } from '../auth/enums/role.enum';
+import { generateGuardianPassword } from '../common/security/password-generator';
+import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class UsersService {
@@ -51,5 +53,24 @@ export class UsersService {
     });
 
     return user.save();
+  }
+
+  async resetPasswordById(userId: string) {
+    const user = await this.findById(userId);
+
+    if (!user) {
+      return null;
+    }
+
+    const newPassword = generateGuardianPassword();
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    user.passwordHash = passwordHash;
+    await user.save();
+
+    return {
+      user,
+      plainPassword: newPassword,
+    };
   }
 }

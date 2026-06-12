@@ -8,6 +8,8 @@ import { ConfigModule } from '@nestjs/config';
 import { GuardiansModule } from './guardians/guardians.module';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
+import { MailModule } from './mail/mail.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -19,6 +21,8 @@ import { AuthModule } from './auth/auth.module';
     }),
     UsersModule,
     AuthModule,
+    MailModule,
+    AdminModule,
     GuardiansModule,
   ],
   controllers: [AppController],
