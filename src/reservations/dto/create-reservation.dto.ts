@@ -1,4 +1,13 @@
-import { IsMongoId, IsBoolean, IsArray, IsString } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ArrayNotEmpty, IsArray, IsBoolean, IsMongoId, IsObject, IsOptional, IsString, ValidateNested } from 'class-validator';
+
+export class AttendingDependentDto {
+  @IsString()
+  name: string;
+
+  @IsString()
+  rut: string;
+}
 
 export class CreateReservationDto {
   @IsMongoId({ message: 'scheduleId must be a valid MongoDB ID' })
@@ -11,6 +20,12 @@ export class CreateReservationDto {
   guardianParticipates: boolean;
 
   @IsArray()
-  @IsString({ each: true })
-  attendingDependents: string[];
+  @ArrayNotEmpty()
+  @ValidateNested({ each: true })
+  @Type(() => AttendingDependentDto)
+  attendingDependents: AttendingDependentDto[];
+
+  @IsOptional()
+  @IsObject()
+  metadata?: Record<string, unknown>;
 }

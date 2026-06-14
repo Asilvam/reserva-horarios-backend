@@ -7,8 +7,6 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '../auth/enums/role.enum';
 
 @Controller('guardians')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.Admin)
 export class GuardiansController {
   constructor(private readonly guardiansService: GuardiansService) {}
 
@@ -18,11 +16,15 @@ export class GuardiansController {
   }
 
   @Get()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin, Role.Guardian)
   findAll() {
     return this.guardiansService.findAll();
   }
 
   @Get(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin, Role.Guardian)
   findById(@Param('id') id: string) {
     return this.guardiansService.findById(id);
   }

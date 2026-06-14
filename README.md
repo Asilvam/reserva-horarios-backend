@@ -95,6 +95,32 @@ Las implementaciones actuales de `SchedulesService` y `ReservationsService` devu
 - Jest (testing)
 - ESLint + Prettier
 
+## Canales de WhatsApp
+
+Se separan dos canales:
+
+- `wspWEB`: integracion con `whatsapp-web.js` (sesion via QR en navegador automatizado)
+- `wspMETA`: nombre reservado para futura integracion con WhatsApp Cloud API de Meta
+
+### Variables de entorno para `wspMETA`
+
+- `WSP_META_ENABLED` (default: `false`)
+- `WSP_META_TOKEN` (token permanente/sistema de Meta)
+- `WSP_META_PHONE_NUMBER_ID` (ID del numero de WhatsApp en Meta)
+- `WSP_META_API_VERSION` (default: `v20.0`)
+
+Si `WSP_META_ENABLED=true` y la configuracion esta completa, el backend enviara mensajes por Cloud API de Meta.
+Si falla el envio por `wspMETA`, el flujo de reserva hace fallback a `wspWEB` para no perder la notificacion.
+
+### Variables de entorno para `wspWEB`
+
+- `WSP_WEB_ENABLED` (default: `false`)
+- `WSP_WEB_CLIENT_ID` (default: `wspWEB`)
+- `WSP_WEB_SESSION_PATH` (default: `.wwebjs_auth`)
+- `WSP_WEB_HEADLESS` (default: `true`)
+
+Si `WSP_WEB_ENABLED=true`, el backend inicializa el cliente en el arranque y muestra el QR en logs para vincular la sesion.
+
 ## Estructura principal
 
 ```text

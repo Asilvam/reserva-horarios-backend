@@ -18,18 +18,21 @@ export class ReservationsController {
   constructor(private readonly reservationsService: ReservationsService) {}
 
   @Post()
-  create(@Body() createReservationDto: CreateReservationDto) {
-    return this.reservationsService.createReservation(createReservationDto);
+  @Roles(Role.Admin, Role.Guardian)
+  create(@Body() createReservationDto: CreateReservationDto, @Req() req: RequestWithUser) {
+    return this.reservationsService.createReservation(createReservationDto, req.user);
   }
 
   @Get()
-  findAll() {
-    return this.reservationsService.findAll();
+  @Roles(Role.Admin, Role.Guardian)
+  findAll(@Req() req: RequestWithUser) {
+    return this.reservationsService.findAll(req.user);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.reservationsService.findOne(id);
+  @Roles(Role.Admin, Role.Guardian)
+  findOne(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.reservationsService.findOne(id, req.user);
   }
 
   @Patch(':id')

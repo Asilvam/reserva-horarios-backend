@@ -1,5 +1,16 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document, Types } from 'mongoose';
+import { Document, Schema as MongooseSchema, Types } from 'mongoose';
+
+@Schema({ _id: false })
+export class AttendingDependent {
+  @Prop({ required: true })
+  name: string;
+
+  @Prop({ required: true })
+  rut: string;
+}
+
+export const AttendingDependentSchema = SchemaFactory.createForClass(AttendingDependent);
 
 @Schema({ timestamps: true })
 export class Reservation extends Document {
@@ -12,8 +23,11 @@ export class Reservation extends Document {
   @Prop({ required: true, default: true })
   guardianParticipates: boolean;
 
-  @Prop({ type: [String], default: [] })
-  attendingDependents: string[];
+  @Prop({ type: [AttendingDependentSchema], default: [] })
+  attendingDependents: AttendingDependent[];
+
+  @Prop({ type: MongooseSchema.Types.Mixed })
+  metadata?: Record<string, unknown>;
 
   @Prop({ required: true })
   totalSpotsConsumed: number;

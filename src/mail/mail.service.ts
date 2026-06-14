@@ -37,21 +37,19 @@ export class MailService {
     `;
   }
 
-  async sendGuardianCredentials(email: string, password: string) {
+  private createTransport() {
     const host = this.configService.get<string>('SMTP_HOST');
     const port = this.configService.get<number>('SMTP_PORT', 587);
     const user = this.configService.get<string>('SMTP_USER');
     const pass = this.configService.get<string>('SMTP_PASS');
-    const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
     const secure = this.getBoolean('MAIL_SECURE', port === 465);
     const tls = this.getBoolean('MAIL_TLS', true);
 
     if (!host || !user || !pass) {
-      this.logger.warn('SMTP no configurado. Correo omitido.');
-      return;
+      return null;
     }
 
-    const transporter = nodemailer.createTransport({
+    return nodemailer.createTransport({
       host,
       port,
       secure,
@@ -61,6 +59,16 @@ export class MailService {
       },
       requireTLS: tls,
     });
+  }
+
+  async sendGuardianCredentials(email: string, password: string) {
+    const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
+    const transporter = this.createTransport();
+
+    if (!transporter) {
+      this.logger.warn('SMTP no configurado. Correo omitido.');
+      return;
+    }
 
     const emailContent = `<p>Tu cuenta ha sido creada exitosamente.</p><p>Tus credenciales de acceso son:</p><p style="padding-left: 20px;"><strong>Correo:</strong> ${email}<br/><strong>Contraseña:</strong> ${password}</p><p>Puedes usar esta contraseña para iniciar sesión. Te recomendamos cambiarla después de tu primer acceso.</p>`;
     const html = this._generateModernHtmlTemplate('¡Bienvenido a Reserva Horarios!', emailContent);
@@ -75,29 +83,13 @@ export class MailService {
   }
 
   async sendResetPassword(email: string, password: string) {
-    const host = this.configService.get<string>('SMTP_HOST');
-    const port = this.configService.get<number>('SMTP_PORT', 587);
-    const user = this.configService.get<string>('SMTP_USER');
-    const pass = this.configService.get<string>('SMTP_PASS');
     const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
-    const secure = this.getBoolean('MAIL_SECURE', port === 465);
-    const tls = this.getBoolean('MAIL_TLS', true);
+    const transporter = this.createTransport();
 
-    if (!host || !user || !pass) {
+    if (!transporter) {
       this.logger.warn('SMTP no configurado. Correo de reset omitido.');
       return;
     }
-
-    const transporter = nodemailer.createTransport({
-      host,
-      port,
-      secure,
-      auth: {
-        user,
-        pass,
-      },
-      requireTLS: tls,
-    });
 
     const emailContent = `<p>Se ha restablecido tu contraseña a petición de un administrador.</p><p>Tu nueva contraseña es:</p><p style="padding-left: 20px;"><strong>Nueva Contraseña:</strong> ${password}</p><p>Usa esta nueva contraseña para acceder a tu cuenta. Por seguridad, te recomendamos cambiarla lo antes posible.</p>`;
     const html = this._generateModernHtmlTemplate('Restablecimiento de Contraseña', emailContent);
@@ -107,6 +99,38 @@ export class MailService {
       to: email,
       subject: 'Nueva contrasena - Reserva Horarios',
       text: `Tu contrasena fue regenerada por un administrador.\n\nCorreo: ${email}\nNueva contrasena: ${password}`,
+      html,
+    });
+  }
+
+  async sendReservationConfirmation(
+    email: string,
+    guardianName: string,
+    scheduleDateTime: string,
+    companions: Array<{ name: string; rut: string }>,
+  ) {
+    const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
+    const transporter = this.createTransport();
+
+    if (!transporter) {
+      this.logger.warn('SMTP no configurado. Correo de confirmacion de reserva omitido.');
+      return;
+    }
+
+    const companionsHtml = companions
+      .map((companion) => `<li><strong>${companion.name}</strong> (${companion.rut})</li>`)
+      .join('');
+
+    const companionsText = companions.map((companion) => `- ${companion.name} (${companion.rut})`).join('\n');
+
+    const emailContent = `<p>Hola ${guardianName}, tu reserva fue registrada correctamente.</p><p><strong>Fecha y hora:</strong> ${scheduleDateTime}</p><p><strong>Acompanantes:</strong></p><ul>${companionsHtml || '<li>Sin acompanantes</li>'}</ul>`;
+    const html = this._generateModernHtmlTemplate('Confirmacion de Reserva', emailContent);
+
+    await transporter.sendMail({
+      from,
+      to: email,
+      subject: 'Reserva confirmada - Reserva Horarios',
+      text: `Hola ${guardianName}, tu reserva fue registrada correctamente.\n\nFecha y hora: ${scheduleDateTime}\n\nAcompanantes:\n${companionsText || '- Sin acompanantes'}`,
       html,
     });
   }

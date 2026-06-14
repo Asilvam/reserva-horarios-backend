@@ -5,6 +5,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Schedule } from './entities/schedule.entity';
 import { Model, Types } from 'mongoose';
 import { GenerateBlocksDto } from './dto/generate-blocks.dto';
+import { chileLocalDateTimeToUtc } from '../common/datetime/chile-time.util';
 
 @Injectable()
 export class SchedulesService {
@@ -13,9 +14,9 @@ export class SchedulesService {
   async generateDailyBlocks(dto: GenerateBlocksDto) {
     const { date, startHour, endHour, durationMinutes, totalCapacity, maxDependents } = dto;
 
-    // 1. Convertir los strings de fecha/hora a objetos Date (usamos UTC para evitar desfases)
-    const startTime = new Date(`${date}T${startHour}:00Z`);
-    const endTime = new Date(`${date}T${endHour}:00Z`);
+    // 1. Convertir fecha/hora local Chile a UTC para persistir sin desfases
+    const startTime = chileLocalDateTimeToUtc(date, startHour);
+    const endTime = chileLocalDateTimeToUtc(date, endHour);
 
     if (startTime >= endTime) {
       throw new BadRequestException('La hora de inicio debe ser estrictamente anterior a la hora de fin.');
