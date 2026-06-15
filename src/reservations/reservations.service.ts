@@ -149,6 +149,7 @@ export class ReservationsService {
     const updatedSchedule = await this.scheduleModel.findOneAndUpdate(
       {
         _id: dto.scheduleId,
+        startTime: { $gt: now },
         availableSpots: { $gte: spotsToConsume }, // Condición: cupos >= a los requeridos
       },
       {
@@ -158,6 +159,16 @@ export class ReservationsService {
     );
 
     if (!updatedSchedule) {
+      const scheduleExpired = await this.scheduleModel.exists({
+        _id: dto.scheduleId,
+        startTime: { $lte: now },
+      });
+
+      if (scheduleExpired) {
+        this.logger.warn(`Intento de reserva para horario caducado (carrera): scheduleId=${dto.scheduleId}`);
+        throw new BadRequestException('No se puede reservar un horario que ya caducó.');
+      }
+
       this.logger.warn(`Sin cupos suficientes para guardianId=${guardianId} en scheduleId=${dto.scheduleId}.`);
       throw new ConflictException('No hay suficientes cupos disponibles para esta reserva.');
     }
@@ -180,22 +191,34 @@ export class ReservationsService {
       return savedReservation;
     } catch (error) {
       if (error?.code === 11000) {
-        this.logger.error(`Error de duplicidad al guardar reserva. Restaurando cupos para scheduleId=${dto.scheduleId}.`);
-        const restoredSchedule = await this.scheduleModel.findByIdAndUpdate(dto.scheduleId, {
-          $inc: { availableSpots: spotsToConsume },
-        }, {
-          returnDocument: 'after',
-        });
-
-        if (restoredSchedule) {
-          this.schedulesGateway.broadcastSpotsUpdate(restoredSchedule._id.toString(), restoredSchedule.availableSpots);
-        }
+        await this.restoreSpots(dto.scheduleId, spotsToConsume, 'Error de duplicidad al guardar reserva.');
 
         throw new ConflictException('El apoderado ya tiene una reserva para ese dia.');
       }
 
+      await this.restoreSpots(dto.scheduleId, spotsToConsume, 'Error al guardar reserva.');
       this.logger.error(`Error al guardar reserva: ${error}`);
       throw error;
+    }
+  }
+
+  private async restoreSpots(scheduleId: string, spotsToRestore: number, context: string) {
+    this.logger.error(`${context} Restaurando cupos para scheduleId=${scheduleId}.`);
+
+    const restoredSchedule = await this.scheduleModel.findByIdAndUpdate(
+      scheduleId,
+      {
+        $inc: { availableSpots: spotsToRestore },
+      },
+      {
+        returnDocument: 'after',
+      },
+    );
+
+    if (restoredSchedule) {
+      this.schedulesGateway.broadcastSpotsUpdate(restoredSchedule._id.toString(), restoredSchedule.availableSpots);
+    } else {
+      this.logger.warn(`No se pudo restaurar cupos para scheduleId=${scheduleId}.`);
     }
   }
 
