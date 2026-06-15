@@ -24,6 +24,12 @@ export class GuardiansService {
       throw new ConflictException('A guardian with this RUT already exists.');
     }
 
+    const existingGuardianByPhone = await this.guardianModel.findOne({ phone: createGuardianDto.phone });
+
+    if (existingGuardianByPhone) {
+      throw new ConflictException('A guardian with this phone already exists.');
+    }
+
     const dependentRuts = (createGuardianDto.dependents ?? []).map((dependent) => dependent.rut);
 
     if (dependentRuts.length > 0) {

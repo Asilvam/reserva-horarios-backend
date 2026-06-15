@@ -23,7 +23,7 @@ export class Guardian extends Document {
   @Prop({ required: true })
   email: string;
 
-  @Prop({ required: true })
+  @Prop({ required: true, unique: true })
   phone: string;
 
   @Prop({ type: [DependentSchema], default: [] })
