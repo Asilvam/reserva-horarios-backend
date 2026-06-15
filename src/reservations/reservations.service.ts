@@ -42,10 +42,7 @@ export class ReservationsService {
     private schedulesGateway: SchedulesGateway,
   ) {}
 
-  async enqueueReservation(
-    dto: CreateReservationDto,
-    authUser: AuthUser,
-  ): Promise<{ success: boolean; message: string; jobId: string | undefined }> {
+  async enqueueReservation(dto: CreateReservationDto, authUser: AuthUser): Promise<{ success: boolean; message: string; jobId: string | undefined }> {
     const jobName = 'process-single-reservation';
 
     const job = await this.reservationQueue.add(
