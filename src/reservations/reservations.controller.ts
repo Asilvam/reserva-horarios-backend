@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Req, HttpCode, HttpStatus } from '@nestjs/common';
 import { Request } from 'express';
 import { ReservationsService } from './reservations.service';
 import { CreateReservationDto } from './dto/create-reservation.dto';
@@ -19,8 +19,9 @@ export class ReservationsController {
 
   @Post()
   @Roles(Role.Admin, Role.Guardian)
+  @HttpCode(HttpStatus.ACCEPTED)
   create(@Body() createReservationDto: CreateReservationDto, @Req() req: RequestWithUser) {
-    return this.reservationsService.createReservation(createReservationDto, req.user);
+    return this.reservationsService.enqueueReservation(createReservationDto, req.user);
   }
 
   @Get()

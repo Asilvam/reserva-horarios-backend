@@ -20,6 +20,13 @@ import { MailService } from '../mail/mail.service';
 import { getChileDateTimeLabel, getChileStartOfDayUtc } from '../common/datetime/chile-time.util';
 import { WspMetaService } from '../wsp-meta/wsp-meta.service';
 import { SchedulesGateway } from '../schedules/schedules.gateway';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
+
+export type ReservationQueuePayload = {
+  dto: CreateReservationDto;
+  authUser: AuthUser;
+};
 
 @Injectable()
 export class ReservationsService {
@@ -28,11 +35,44 @@ export class ReservationsService {
   constructor(
     @InjectModel(Reservation.name) private reservationModel: Model<Reservation>,
     @InjectModel(Schedule.name) private scheduleModel: Model<Schedule>,
+    @InjectQueue('reservation-queue') private readonly reservationQueue: Queue,
     private guardiansService: GuardiansService,
     private mailService: MailService,
     private wspMetaService: WspMetaService,
     private schedulesGateway: SchedulesGateway,
   ) {}
+
+  async enqueueReservation(
+    dto: CreateReservationDto,
+    authUser: AuthUser,
+  ): Promise<{ success: boolean; message: string; jobId: string | undefined }> {
+    const jobName = 'process-single-reservation';
+
+    const job = await this.reservationQueue.add(
+      jobName,
+      {
+        dto,
+        authUser,
+      },
+      {
+        removeOnComplete: true,
+        removeOnFail: false,
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 1000,
+        },
+      },
+    );
+
+    this.logger.log(`Job '${jobName}' enqueued for guardian ${dto.guardianId}`);
+
+    return {
+      success: true,
+      message: 'Your reservation request is being processed.',
+      jobId: job.id?.toString(),
+    };
+  }
 
   async createReservation(dto: CreateReservationDto, authUser: AuthUser) {
     this.logger.log(`Intento de reserva para scheduleId=${dto.scheduleId} por guardianId=${dto.guardianId}`);
@@ -105,19 +145,14 @@ export class ReservationsService {
         }
 
         if (typeof shoeSize !== 'number' || !Number.isFinite(shoeSize) || shoeSize <= 0) {
-          throw new BadRequestException(
-            'Cada elemento de metadata.patines debe incluir shoeSize numerico mayor a 0.',
-          );
+          throw new BadRequestException('Cada elemento de metadata.patines debe incluir shoeSize numerico mayor a 0.');
         }
 
         patinesRuts.push(rut);
       }
 
       const uniquePatinesRuts = new Set(patinesRuts);
-      const hasExactPatinesMatch =
-        patinesRuts.length === attendingRuts.length &&
-        uniquePatinesRuts.size === patinesRuts.length &&
-        attendingRuts.every((rut) => uniquePatinesRuts.has(rut));
+      const hasExactPatinesMatch = patinesRuts.length === attendingRuts.length && uniquePatinesRuts.size === patinesRuts.length && attendingRuts.every((rut) => uniquePatinesRuts.has(rut));
 
       if (!hasExactPatinesMatch) {
         throw new BadRequestException('metadata.patines debe coincidir 1:1 con attendingDependents por RUT.');
@@ -232,10 +267,7 @@ export class ReservationsService {
 
   private async sendReservationConfirmationNotifications(guardian: { name: string; email: string; phone: string }, startTime: Date, attendingDependents: Array<{ name: string; rut: string }>) {
     const scheduleDateTime = this.formatDateTime(startTime);
-    const companionsLine =
-      attendingDependents.length > 0
-        ? attendingDependents.map((dependent) => `${dependent.name} (${dependent.rut})`).join(', ')
-        : 'Sin acompanantes';
+    const companionsLine = attendingDependents.length > 0 ? attendingDependents.map((dependent) => `${dependent.name} (${dependent.rut})`).join(', ') : 'Sin acompanantes';
 
     try {
       await this.mailService.sendReservationConfirmation(guardian.email, guardian.name, scheduleDateTime, attendingDependents);
@@ -251,19 +283,11 @@ export class ReservationsService {
         try {
           await this.wspMetaService.sendTextMessage(guardian.phone, message);
         } catch (metaError) {
-          this.logger.error(
-            `Fallo wspMETA para phone=${guardian.phone}. No hay fallback wspWEB configurado en este flujo: ${
-              metaError instanceof Error ? metaError.message : String(metaError)
-            }`,
-          );
+          this.logger.error(`Fallo wspMETA para phone=${guardian.phone}. No hay fallback wspWEB configurado en este flujo: ${metaError instanceof Error ? metaError.message : String(metaError)}`);
         }
       }
     } catch (error) {
-      this.logger.error(
-        `No se pudo enviar WhatsApp de confirmacion para phone=${guardian.phone}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      this.logger.error(`No se pudo enviar WhatsApp de confirmacion para phone=${guardian.phone}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -330,9 +354,7 @@ export class ReservationsService {
 
         if (authUser.role === Role.Guardian) {
           if (!authUser.guardianId || authUser.guardianId !== reservation.guardianId.toString()) {
-            this.logger.warn(
-              `Guardian intentando eliminar reserva de otro apoderado (${reservation.guardianId}).`,
-            );
+            this.logger.warn(`Guardian intentando eliminar reserva de otro apoderado (${reservation.guardianId}).`);
             throw new ForbiddenException('No puedes eliminar una reserva de otro apoderado.');
           }
         }
@@ -363,13 +385,8 @@ export class ReservationsService {
     const finalRemovedReservationScheduleId = removedReservationScheduleId;
 
     if (finalUpdatedScheduleAfterDelete && finalRemovedReservationScheduleId) {
-      this.logger.log(
-        `Cupos restaurados para scheduleId=${finalRemovedReservationScheduleId}. Disponibles: ${finalUpdatedScheduleAfterDelete.availableSpots}`,
-      );
-      this.schedulesGateway.broadcastSpotsUpdate(
-        finalUpdatedScheduleAfterDelete._id.toString(),
-        finalUpdatedScheduleAfterDelete.availableSpots,
-      );
+      this.logger.log(`Cupos restaurados para scheduleId=${finalRemovedReservationScheduleId}. Disponibles: ${finalUpdatedScheduleAfterDelete.availableSpots}`);
+      this.schedulesGateway.broadcastSpotsUpdate(finalUpdatedScheduleAfterDelete._id.toString(), finalUpdatedScheduleAfterDelete.availableSpots);
     } else {
       this.logger.warn(`No se pudo restaurar cupos para scheduleId=${finalRemovedReservationScheduleId ?? 'desconocido'} tras eliminar reserva.`);
     }
