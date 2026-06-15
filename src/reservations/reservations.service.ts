@@ -10,6 +10,7 @@ import {
   ConflictException,
   NotFoundException,
   ForbiddenException,
+  InternalServerErrorException,
   Logger,
 } from '@nestjs/common';
 import { GuardiansService } from '../guardians/guardians.service';
@@ -62,22 +63,6 @@ export class ReservationsService {
     if (schedule.startTime <= now) {
       this.logger.warn(`Intento de reserva para horario caducado: scheduleId=${dto.scheduleId}`);
       throw new BadRequestException('No se puede reservar un horario que ya caducó.');
-    }
-
-    const reservationDay = getChileStartOfDayUtc(schedule.startTime);
-    const nextReservationDay = new Date(reservationDay.getTime() + 24 * 60 * 60 * 1000);
-
-    const existingReservationForDay = await this.reservationModel.exists({
-      guardianId,
-      reservationDay: {
-        $gte: reservationDay,
-        $lt: nextReservationDay,
-      },
-    });
-
-    if (existingReservationForDay) {
-      this.logger.warn(`Conflicto: El apoderado ${guardianId} ya tiene reserva para el dia.`);
-      throw new ConflictException('El apoderado ya tiene una reserva para ese dia.');
     }
 
     const attendingDependentsCount = dto.attendingDependents.length;
@@ -146,80 +131,103 @@ export class ReservationsService {
       throw new BadRequestException('La reserva debe consumir al menos 1 cupo.');
     }
 
-    const updatedSchedule = await this.scheduleModel.findOneAndUpdate(
-      {
-        _id: dto.scheduleId,
-        startTime: { $gt: now },
-        availableSpots: { $gte: spotsToConsume }, // Condición: cupos >= a los requeridos
-      },
-      {
-        $inc: { availableSpots: -spotsToConsume }, // Restar los cupos
-      },
-      { returnDocument: 'after' },
-    );
-
-    if (!updatedSchedule) {
-      const scheduleExpired = await this.scheduleModel.exists({
-        _id: dto.scheduleId,
-        startTime: { $lte: now },
-      });
-
-      if (scheduleExpired) {
-        this.logger.warn(`Intento de reserva para horario caducado (carrera): scheduleId=${dto.scheduleId}`);
-        throw new BadRequestException('No se puede reservar un horario que ya caducó.');
-      }
-
-      this.logger.warn(`Sin cupos suficientes para guardianId=${guardianId} en scheduleId=${dto.scheduleId}.`);
-      throw new ConflictException('No hay suficientes cupos disponibles para esta reserva.');
-    }
-
-    this.logger.log(`Cupos actualizados para scheduleId=${dto.scheduleId}. Disponibles: ${updatedSchedule.availableSpots}`);
-    this.schedulesGateway.broadcastSpotsUpdate(updatedSchedule._id.toString(), updatedSchedule.availableSpots);
-
-    const newReservation = new this.reservationModel({
-      ...dto,
-      totalSpotsConsumed: spotsToConsume,
-      reservationDay,
-    });
+    const session = await this.reservationModel.db.startSession();
+    let savedReservation: Reservation | null = null;
+    let updatedSchedule: Schedule | null = null;
+    let reservationStartTime: Date | null = null;
 
     try {
-      const savedReservation = await newReservation.save();
-      this.logger.log(`Reserva creada exitosamente: reservationId=${savedReservation._id}`);
+      await session.withTransaction(async () => {
+        const scheduleInTx = await this.scheduleModel.findById(dto.scheduleId).session(session);
 
-      await this.sendReservationConfirmationNotifications(guardian, schedule.startTime, dto.attendingDependents);
+        if (!scheduleInTx) {
+          this.logger.error(`Horario no encontrado en transaccion: scheduleId=${dto.scheduleId}`);
+          throw new BadRequestException('Horario no encontrado');
+        }
 
-      return savedReservation;
+        const reservationDay = getChileStartOfDayUtc(scheduleInTx.startTime);
+        const nextReservationDay = new Date(reservationDay.getTime() + 24 * 60 * 60 * 1000);
+
+        const existingReservationForDay = await this.reservationModel
+          .exists({
+            guardianId,
+            reservationDay: {
+              $gte: reservationDay,
+              $lt: nextReservationDay,
+            },
+          })
+          .session(session);
+
+        if (existingReservationForDay) {
+          this.logger.warn(`Conflicto: El apoderado ${guardianId} ya tiene reserva para el dia.`);
+          throw new ConflictException('El apoderado ya tiene una reserva para ese dia.');
+        }
+
+        const updatedScheduleInTx = await this.scheduleModel.findOneAndUpdate(
+          {
+            _id: dto.scheduleId,
+            startTime: { $gt: now },
+            availableSpots: { $gte: spotsToConsume },
+          },
+          {
+            $inc: { availableSpots: -spotsToConsume },
+          },
+          { returnDocument: 'after', session },
+        );
+
+        if (!updatedScheduleInTx) {
+          const scheduleExpired = await this.scheduleModel
+            .exists({
+              _id: dto.scheduleId,
+              startTime: { $lte: now },
+            })
+            .session(session);
+
+          if (scheduleExpired) {
+            this.logger.warn(`Intento de reserva para horario caducado (carrera): scheduleId=${dto.scheduleId}`);
+            throw new BadRequestException('No se puede reservar un horario que ya caducó.');
+          }
+
+          this.logger.warn(`Sin cupos suficientes para guardianId=${guardianId} en scheduleId=${dto.scheduleId}.`);
+          throw new ConflictException('No hay suficientes cupos disponibles para esta reserva.');
+        }
+
+        const newReservation = new this.reservationModel({
+          ...dto,
+          totalSpotsConsumed: spotsToConsume,
+          reservationDay,
+        });
+
+        savedReservation = await newReservation.save({ session });
+        updatedSchedule = updatedScheduleInTx;
+        reservationStartTime = scheduleInTx.startTime;
+      });
     } catch (error) {
       if (error?.code === 11000) {
-        await this.restoreSpots(dto.scheduleId, spotsToConsume, 'Error de duplicidad al guardar reserva.');
-
         throw new ConflictException('El apoderado ya tiene una reserva para ese dia.');
       }
 
-      await this.restoreSpots(dto.scheduleId, spotsToConsume, 'Error al guardar reserva.');
       this.logger.error(`Error al guardar reserva: ${error}`);
       throw error;
+    } finally {
+      await session.endSession();
     }
-  }
 
-  private async restoreSpots(scheduleId: string, spotsToRestore: number, context: string) {
-    this.logger.error(`${context} Restaurando cupos para scheduleId=${scheduleId}.`);
-
-    const restoredSchedule = await this.scheduleModel.findByIdAndUpdate(
-      scheduleId,
-      {
-        $inc: { availableSpots: spotsToRestore },
-      },
-      {
-        returnDocument: 'after',
-      },
-    );
-
-    if (restoredSchedule) {
-      this.schedulesGateway.broadcastSpotsUpdate(restoredSchedule._id.toString(), restoredSchedule.availableSpots);
-    } else {
-      this.logger.warn(`No se pudo restaurar cupos para scheduleId=${scheduleId}.`);
+    if (!savedReservation || !updatedSchedule || !reservationStartTime) {
+      throw new InternalServerErrorException('No se pudo completar la reserva.');
     }
+
+    const finalReservation = savedReservation as Reservation;
+    const finalSchedule = updatedSchedule as Schedule;
+    const finalReservationStartTime = reservationStartTime as Date;
+
+    this.logger.log(`Cupos actualizados para scheduleId=${dto.scheduleId}. Disponibles: ${finalSchedule.availableSpots}`);
+    this.schedulesGateway.broadcastSpotsUpdate(finalSchedule._id.toString(), finalSchedule.availableSpots);
+
+    this.logger.log(`Reserva creada exitosamente: reservationId=${finalReservation._id}`);
+    await this.sendReservationConfirmationNotifications(guardian, finalReservationStartTime, dto.attendingDependents);
+
+    return finalReservation;
   }
 
   private async sendReservationConfirmationNotifications(guardian: { name: string; email: string; phone: string }, startTime: Date, attendingDependents: Array<{ name: string; rut: string }>) {
@@ -244,7 +252,7 @@ export class ReservationsService {
           await this.wspMetaService.sendTextMessage(guardian.phone, message);
         } catch (metaError) {
           this.logger.error(
-            `Fallo wspMETA para phone=${guardian.phone}. Se intenta fallback wspWEB: ${
+            `Fallo wspMETA para phone=${guardian.phone}. No hay fallback wspWEB configurado en este flujo: ${
               metaError instanceof Error ? metaError.message : String(metaError)
             }`,
           );
@@ -307,42 +315,63 @@ export class ReservationsService {
       throw new BadRequestException('Id de reserva invalido');
     }
 
-    const reservation = await this.reservationModel.findById(id).exec();
+    const session = await this.reservationModel.db.startSession();
+    let updatedScheduleAfterDelete: Schedule | null = null;
+    let removedReservationScheduleId: string | null = null;
 
-    if (!reservation) {
-      this.logger.warn(`Reserva no encontrada para eliminacion: reservationId=${id}`);
-      throw new NotFoundException('Reserva no encontrada');
-    }
+    try {
+      await session.withTransaction(async () => {
+        const reservation = await this.reservationModel.findById(id).session(session);
 
-    if (authUser.role === Role.Guardian) {
-      if (!authUser.guardianId || authUser.guardianId !== reservation.guardianId.toString()) {
-        this.logger.warn(
-          `Guardian intentando eliminar reserva de otro apoderado (${reservation.guardianId}).`,
+        if (!reservation) {
+          this.logger.warn(`Reserva no encontrada para eliminacion: reservationId=${id}`);
+          throw new NotFoundException('Reserva no encontrada');
+        }
+
+        if (authUser.role === Role.Guardian) {
+          if (!authUser.guardianId || authUser.guardianId !== reservation.guardianId.toString()) {
+            this.logger.warn(
+              `Guardian intentando eliminar reserva de otro apoderado (${reservation.guardianId}).`,
+            );
+            throw new ForbiddenException('No puedes eliminar una reserva de otro apoderado.');
+          }
+        }
+
+        await this.reservationModel.findByIdAndDelete(id, { session });
+
+        const updatedSchedule = await this.scheduleModel.findByIdAndUpdate(
+          reservation.scheduleId,
+          {
+            $inc: { availableSpots: reservation.totalSpotsConsumed },
+          },
+          {
+            returnDocument: 'after',
+            session,
+          },
         );
-        throw new ForbiddenException('No puedes eliminar una reserva de otro apoderado.');
-      }
+
+        updatedScheduleAfterDelete = updatedSchedule;
+        removedReservationScheduleId = reservation.scheduleId.toString();
+      });
+    } finally {
+      await session.endSession();
     }
 
-    await this.reservationModel.findByIdAndDelete(id).exec();
     this.logger.log(`Reserva eliminada: reservationId=${id}`);
 
-    const updatedSchedule = await this.scheduleModel
-      .findByIdAndUpdate(
-        reservation.scheduleId,
-        {
-          $inc: { availableSpots: reservation.totalSpotsConsumed },
-        },
-        {
-          returnDocument: 'after',
-        },
-      )
-      .exec();
+    const finalUpdatedScheduleAfterDelete = updatedScheduleAfterDelete as Schedule | null;
+    const finalRemovedReservationScheduleId = removedReservationScheduleId;
 
-    if (updatedSchedule) {
-      this.logger.log(`Cupos restaurados para scheduleId=${reservation.scheduleId}. Disponibles: ${updatedSchedule.availableSpots}`);
-      this.schedulesGateway.broadcastSpotsUpdate(updatedSchedule._id.toString(), updatedSchedule.availableSpots);
+    if (finalUpdatedScheduleAfterDelete && finalRemovedReservationScheduleId) {
+      this.logger.log(
+        `Cupos restaurados para scheduleId=${finalRemovedReservationScheduleId}. Disponibles: ${finalUpdatedScheduleAfterDelete.availableSpots}`,
+      );
+      this.schedulesGateway.broadcastSpotsUpdate(
+        finalUpdatedScheduleAfterDelete._id.toString(),
+        finalUpdatedScheduleAfterDelete.availableSpots,
+      );
     } else {
-      this.logger.warn(`No se pudo restaurar cupos para scheduleId=${reservation.scheduleId} tras eliminar reserva.`);
+      this.logger.warn(`No se pudo restaurar cupos para scheduleId=${finalRemovedReservationScheduleId ?? 'desconocido'} tras eliminar reserva.`);
     }
 
     return {
