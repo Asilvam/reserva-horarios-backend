@@ -1,5 +1,5 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Req, HttpCode, HttpStatus, Header } from '@nestjs/common';
-import { Request } from 'express';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Req, HttpCode, HttpStatus, Header, Res, NotFoundException } from '@nestjs/common';
+import * as express from 'express';
 import { ReservationsService } from './reservations.service';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { UpdateReservationDto } from './dto/update-reservation.dto';
@@ -9,7 +9,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '../auth/enums/role.enum';
 import { AuthUser } from '../auth/interfaces/auth-user.interface';
 
-type RequestWithUser = Request & { user: AuthUser };
+type RequestWithUser = express.Request & { user: AuthUser };
 
 @Controller('reservations')
 export class ReservationsController {
@@ -20,6 +20,26 @@ export class ReservationsController {
   create(@Body() createReservationDto: CreateReservationDto, @Req() req: RequestWithUser) {
     const user = req.user;
     return this.reservationsService.enqueueReservation(createReservationDto, user);
+  }
+
+  @Get('by-guardian/:guardianId')
+  async findByGuardian(@Param('guardianId') guardianId: string) {
+    const reservation = await this.reservationsService.findByGuardianId(guardianId);
+    if (!reservation) {
+      throw new NotFoundException('Reserva no encontrada aún');
+    }
+    return reservation;
+  }
+
+  @Get(':id/qrcode')
+  async getQrCode(@Param('id') id: string, @Res() res: express.Response) {
+    const buffer = await this.reservationsService.getQrCodeBuffer(id);
+    res.set({
+      'Content-Type': 'image/png',
+      'Content-Disposition': `attachment; filename="reserva-${id}.png"`,
+      'Content-Length': buffer.length,
+    });
+    res.end(buffer);
   }
 
   @Get()

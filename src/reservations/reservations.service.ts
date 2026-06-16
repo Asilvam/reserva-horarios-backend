@@ -4,6 +4,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Reservation } from './entities/reservation.entity';
 import { Schedule } from '../schedules/entities/schedule.entity';
+import * as QRCode from 'qrcode';
 import {
   Injectable,
   BadRequestException,
@@ -477,5 +478,22 @@ export class ReservationsService {
       message: 'Check-in realizado exitosamente.',
       reservation: updatedStatus.reservation,
     };
+  }
+
+  async findByGuardianId(guardianId: string) {
+    if (!Types.ObjectId.isValid(guardianId)) {
+      throw new BadRequestException('Id de apoderado invalido');
+    }
+    return this.reservationModel.findOne({ guardianId }).sort({ createdAt: -1 }).exec();
+  }
+
+  async getQrCodeBuffer(id: string): Promise<Buffer> {
+    const baseUrl = process.env.BACKEND_URL || 'http://localhost:3500';
+    const checkInUrl = `${baseUrl}/reservations/${id}/check-in`;
+    return QRCode.toBuffer(checkInUrl, {
+      type: 'png',
+      width: 400,
+      margin: 1,
+    });
   }
 }
