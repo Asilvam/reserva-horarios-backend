@@ -25,7 +25,7 @@ import { Queue } from 'bullmq';
 
 export type ReservationQueuePayload = {
   dto: CreateReservationDto;
-  authUser: AuthUser;
+  authUser?: AuthUser;
 };
 
 @Injectable()
@@ -42,7 +42,7 @@ export class ReservationsService {
     private schedulesGateway: SchedulesGateway,
   ) {}
 
-  async enqueueReservation(dto: CreateReservationDto, authUser: AuthUser): Promise<{ success: boolean; message: string; jobId: string | undefined }> {
+  async enqueueReservation(dto: CreateReservationDto, authUser?: AuthUser): Promise<{ success: boolean; message: string; jobId: string | undefined }> {
     const jobName = 'process-single-reservation';
 
     const job = await this.reservationQueue.add(
@@ -71,10 +71,10 @@ export class ReservationsService {
     };
   }
 
-  async createReservation(dto: CreateReservationDto, authUser: AuthUser) {
+  async createReservation(dto: CreateReservationDto, authUser?: AuthUser) {
     this.logger.log(`Intento de reserva para scheduleId=${dto.scheduleId} por guardianId=${dto.guardianId}`);
 
-    if (authUser.role === Role.Guardian) {
+    if (authUser && authUser.role === Role.Guardian) {
       if (!authUser.guardianId) {
         this.logger.warn(`Guardian sin guardianId asociado.`);
         throw new ForbiddenException('Tu usuario no tiene un apoderado asociado.');
@@ -257,17 +257,28 @@ export class ReservationsService {
     this.schedulesGateway.broadcastSpotsUpdate(finalSchedule._id.toString(), finalSchedule.availableSpots);
 
     this.logger.log(`Reserva creada exitosamente: reservationId=${finalReservation._id}`);
-    await this.sendReservationConfirmationNotifications(guardian, finalReservationStartTime, dto.attendingDependents);
+    await this.sendReservationConfirmationNotifications(guardian, finalReservationStartTime, dto.attendingDependents, finalReservation._id.toString());
 
     return finalReservation;
   }
 
-  private async sendReservationConfirmationNotifications(guardian: { name: string; email: string; phone: string }, startTime: Date, attendingDependents: Array<{ name: string; rut: string }>) {
+  private async sendReservationConfirmationNotifications(
+    guardian: { name: string; email: string; phone: string },
+    startTime: Date,
+    attendingDependents: Array<{ name: string; rut: string }>,
+    reservationId: string,
+  ) {
     const scheduleDateTime = this.formatDateTime(startTime);
     const companionsLine = attendingDependents.length > 0 ? attendingDependents.map((dependent) => `${dependent.name} (${dependent.rut})`).join(', ') : 'Sin acompanantes';
 
     try {
-      await this.mailService.sendReservationConfirmation(guardian.email, guardian.name, scheduleDateTime, attendingDependents);
+      await this.mailService.sendReservationConfirmation(
+        guardian.email,
+        guardian.name,
+        scheduleDateTime,
+        attendingDependents,
+        reservationId,
+      );
     } catch (error) {
       this.logger.error(`No se pudo enviar correo de confirmacion para guardianId=${guardian.email}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -390,6 +401,81 @@ export class ReservationsService {
 
     return {
       message: 'Reserva eliminada correctamente.',
+    };
+  }
+
+  async getReservationCheckInStatus(id: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Id de reserva invalido');
+    }
+
+    const reservation = await this.reservationModel.findById(id).exec();
+    if (!reservation) {
+      throw new NotFoundException('Reserva no encontrada');
+    }
+
+    const guardian = await this.guardiansService.findById(reservation.guardianId.toString());
+    const schedule = await this.scheduleModel.findById(reservation.scheduleId).exec();
+
+    const now = new Date();
+    const startTime = schedule ? new Date(schedule.startTime) : null;
+    const endTime = startTime && schedule ? new Date(startTime.getTime() + (schedule.durationMinutes || 30) * 60000) : null;
+    const isExpired = endTime ? endTime < now : false;
+
+    return {
+      reservation: {
+        id: reservation._id.toString(),
+        guardianName: guardian.name,
+        guardianRut: guardian.rut,
+        guardianEmail: guardian.email,
+        guardianPhone: guardian.phone,
+        startTime,
+        durationMinutes: schedule?.durationMinutes ?? 30,
+        attendingDependents: reservation.attendingDependents,
+        isCheckedIn: reservation.isCheckedIn,
+        checkInAt: reservation.checkInAt,
+        isExpired,
+        status: isExpired ? 'EXPIRADA' : (reservation.isCheckedIn ? 'CHECKED_IN' : 'VIGENTE'),
+      },
+    };
+  }
+
+  async performCheckIn(id: string, pin: string) {
+    const statusResult = await this.getReservationCheckInStatus(id);
+    const { reservation } = statusResult;
+
+    const expectedPin = process.env.INSPECTOR_PIN || '1234';
+    if (!pin || pin.trim() !== expectedPin.trim()) {
+      throw new ForbiddenException('PIN de inspector incorrecto o no suministrado.');
+    }
+
+    if (reservation.isCheckedIn) {
+      return {
+        success: true,
+        message: 'El check-in ya habia sido realizado previamente.',
+        reservation,
+      };
+    }
+
+    if (reservation.isExpired) {
+      throw new BadRequestException('El horario de la reserva ya expiro.');
+    }
+
+    // Actualizar en BD
+    const dbReservation = await this.reservationModel.findById(id);
+    if (!dbReservation) {
+      throw new NotFoundException('Reserva no encontrada');
+    }
+    dbReservation.isCheckedIn = true;
+    dbReservation.checkInAt = new Date();
+    await dbReservation.save();
+
+    // Obtener estado actualizado
+    const updatedStatus = await this.getReservationCheckInStatus(id);
+    return {
+      success: true,
+      message: 'Check-in realizado exitosamente.',
+      reservation: updatedStatus.reservation,
     };
   }
 }

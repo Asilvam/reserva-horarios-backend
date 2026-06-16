@@ -1,33 +1,69 @@
 import { Injectable, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import * as bcrypt from 'bcrypt';
 import { CreateGuardianDto } from './dto/create-guardian.dto';
 import { Guardian } from './entities/guardian.entity';
-import { UsersService } from '../users/users.service';
-import { generateGuardianPassword } from '../common/security/password-generator';
-import { MailService } from '../mail/mail.service';
 
 @Injectable()
 export class GuardiansService {
   constructor(
     @InjectModel(Guardian.name) private guardianModel: Model<Guardian>,
-    private usersService: UsersService,
-    private mailService: MailService,
   ) {}
 
   async create(createGuardianDto: CreateGuardianDto): Promise<Guardian> {
-    // Verificar si el apoderado ya existe por su RUT
-    const existingGuardian = await this.guardianModel.findOne({ rut: createGuardianDto.rut });
+    // 1. Verificar si el apoderado ya existe por su RUT
+    const guardian = await this.guardianModel.findOne({ rut: createGuardianDto.rut });
 
-    if (existingGuardian) {
-      throw new ConflictException('A guardian with this RUT already exists.');
+    if (guardian) {
+      // Validar que el teléfono no pertenezca a OTRO apoderado
+      const existingGuardianByPhone = await this.guardianModel.findOne({
+        phone: createGuardianDto.phone,
+        _id: { $ne: guardian._id },
+      });
+      if (existingGuardianByPhone) {
+        throw new ConflictException('El número de teléfono ya está registrado por otro apoderado.');
+      }
+
+      // Validar que los acompañantes no pertenezcan a OTRO apoderado
+      const dependentRuts = (createGuardianDto.dependents ?? []).map((dependent) => dependent.rut);
+      if (dependentRuts.length > 0) {
+        const guardianWithDependentRut = await this.guardianModel
+          .findOne({
+            'dependents.rut': { $in: dependentRuts },
+            _id: { $ne: guardian._id },
+          })
+          .select('dependents.rut')
+          .lean();
+
+        if (guardianWithDependentRut) {
+          const existingDependentRut = guardianWithDependentRut.dependents
+            .map((dependent) => dependent.rut)
+            .find((rut) => dependentRuts.includes(rut));
+
+          throw new ConflictException(
+            `El acompañante con RUT ${existingDependentRut} ya está registrado con otro apoderado.`,
+          );
+        }
+      }
+
+      // Actualizar datos del apoderado
+      guardian.name = createGuardianDto.name;
+      guardian.phone = createGuardianDto.phone;
+      guardian.email = createGuardianDto.email;
+      if (createGuardianDto.address) guardian.address = createGuardianDto.address;
+      if (createGuardianDto.commune) guardian.commune = createGuardianDto.commune;
+      guardian.dependents = createGuardianDto.dependents ?? [];
+      guardian.acceptMarketing = createGuardianDto.acceptMarketing ?? false;
+      guardian.acceptDataTerms = createGuardianDto.acceptDataTerms ?? false;
+
+      return await guardian.save();
     }
 
+    // 2. Si no existe, se procede al flujo de creación normal
     const existingGuardianByPhone = await this.guardianModel.findOne({ phone: createGuardianDto.phone });
 
     if (existingGuardianByPhone) {
-      throw new ConflictException('A guardian with this phone already exists.');
+      throw new ConflictException('El número de teléfono ya está registrado por otro apoderado.');
     }
 
     const dependentRuts = (createGuardianDto.dependents ?? []).map((dependent) => dependent.rut);
@@ -44,26 +80,13 @@ export class GuardiansService {
           .find((rut) => dependentRuts.includes(rut));
 
         throw new ConflictException(
-          `Dependent with RUT ${existingDependentRut} already belongs to another guardian.`,
+          `El acompañante con RUT ${existingDependentRut} ya está registrado con otro apoderado.`,
         );
       }
     }
 
-    const tempPassword = generateGuardianPassword();
-    const passwordHash = await bcrypt.hash(tempPassword, 10);
-
     const newGuardian = new this.guardianModel(createGuardianDto);
-    const savedGuardian = await newGuardian.save();
-
-    try {
-      await this.usersService.createGuardianUser(savedGuardian.email, savedGuardian.id, passwordHash);
-      await this.mailService.sendGuardianCredentials(savedGuardian.email, tempPassword);
-    } catch (error) {
-      await this.guardianModel.findByIdAndDelete(savedGuardian.id);
-      throw error;
-    }
-
-    return savedGuardian;
+    return await newGuardian.save();
   }
 
   async findAll(): Promise<Guardian[]> {

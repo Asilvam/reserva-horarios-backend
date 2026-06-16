@@ -34,6 +34,12 @@ export class Reservation extends Document {
 
   @Prop({ required: true })
   reservationDay: Date;
+
+  @Prop({ required: true, default: false })
+  isCheckedIn: boolean;
+
+  @Prop({ required: false })
+  checkInAt?: Date;
 }
 
 export const ReservationSchema = SchemaFactory.createForClass(Reservation);

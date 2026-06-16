@@ -55,6 +55,19 @@ export class UsersService {
     return user.save();
   }
 
+  async findByGuardianId(guardianId: string) {
+    return this.userModel.findOne({ guardianId: new Types.ObjectId(guardianId) }).exec();
+  }
+
+  async updateEmailByGuardianId(guardianId: string, newEmail: string) {
+    const normalizedEmail = newEmail.toLowerCase();
+    const user = await this.userModel.findOne({ guardianId: new Types.ObjectId(guardianId) });
+    if (user) {
+      user.email = normalizedEmail;
+      await user.save();
+    }
+  }
+
   async resetPasswordById(userId: string) {
     const user = await this.findById(userId);
 

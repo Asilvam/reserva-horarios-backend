@@ -1,4 +1,4 @@
-import { IsString, IsNumber, Matches, Min } from 'class-validator';
+import { IsString, IsNumber, Matches, Min, IsOptional } from 'class-validator';
 
 export class GenerateBlocksDto {
   @IsString()
@@ -24,4 +24,8 @@ export class GenerateBlocksDto {
   @IsNumber()
   @Min(0)
   maxDependents: number; // Ej: 4
+
+  @IsString()
+  @IsOptional()
+  eventType?: string; // Ej: 'selva'
 }

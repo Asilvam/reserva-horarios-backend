@@ -8,6 +8,9 @@ export class Dependent {
 
   @Prop({ required: true })
   rut: string;
+
+  @Prop({ required: true })
+  age: number;
 }
 
 export const DependentSchema = SchemaFactory.createForClass(Dependent);
@@ -26,8 +29,20 @@ export class Guardian extends Document {
   @Prop({ required: true, unique: true })
   phone: string;
 
+  @Prop({ required: false })
+  address?: string;
+
+  @Prop({ required: false })
+  commune?: string;
+
   @Prop({ type: [DependentSchema], default: [] })
   dependents: Dependent[];
+
+  @Prop({ required: false, default: false })
+  acceptMarketing?: boolean;
+
+  @Prop({ required: false, default: false })
+  acceptDataTerms?: boolean;
 }
 
 export const GuardianSchema = SchemaFactory.createForClass(Guardian);

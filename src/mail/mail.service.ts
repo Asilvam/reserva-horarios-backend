@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
+import * as QRCode from 'qrcode';
 
 @Injectable()
 export class MailService {
@@ -108,6 +109,7 @@ export class MailService {
     guardianName: string,
     scheduleDateTime: string,
     companions: Array<{ name: string; rut: string }>,
+    reservationId: string,
   ) {
     const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
     const transporter = this.createTransport();
@@ -117,21 +119,56 @@ export class MailService {
       return;
     }
 
+    const baseUrl = this.configService.get<string>('BACKEND_URL') || 'http://localhost:3500';
+    const checkInUrl = `${baseUrl}/reservations/${reservationId}/check-in`;
+
+    let qrBuffer: Buffer;
+    try {
+      qrBuffer = await QRCode.toBuffer(checkInUrl, {
+        type: 'png',
+        width: 250,
+        margin: 1,
+      });
+    } catch (qrErr) {
+      this.logger.error(`Error al generar codigo QR: ${qrErr instanceof Error ? qrErr.message : String(qrErr)}`);
+      return;
+    }
+
     const companionsHtml = companions
       .map((companion) => `<li><strong>${companion.name}</strong> (${companion.rut})</li>`)
       .join('');
 
     const companionsText = companions.map((companion) => `- ${companion.name} (${companion.rut})`).join('\n');
 
-    const emailContent = `<p>Hola ${guardianName}, tu reserva fue registrada correctamente.</p><p><strong>Fecha y hora:</strong> ${scheduleDateTime}</p><p><strong>Acompanantes:</strong></p><ul>${companionsHtml || '<li>Sin acompanantes</li>'}</ul>`;
-    const html = this._generateModernHtmlTemplate('Confirmacion de Reserva', emailContent);
+    const emailContent = `
+      <p>Hola <strong>${guardianName}</strong>, tu reserva fue registrada correctamente.</p>
+      <p><strong>Fecha y hora:</strong> ${scheduleDateTime}</p>
+      <p><strong>Acompañantes registrados:</strong></p>
+      <ul>${companionsHtml || '<li>Sin acompañantes</li>'}</ul>
+      <br/>
+      <div style="text-align: center; margin-top: 20px; padding: 20px; border: 1px dashed #cccccc; border-radius: 8px; background-color: #fafafa;">
+        <h3 style="margin-top: 0; color: #007BFF;">Pase de Entrada (Código QR)</h3>
+        <p style="font-size: 13px; color: #555555; margin-bottom: 15px;">Presenta este código en la entrada para realizar tu Check-In:</p>
+        <img src="cid:reservation-qr" style="width: 200px; height: 200px; display: block; margin: 0 auto; border: 1px solid #dddddd;" alt="Código QR de Reserva"/>
+        <p style="font-size: 11px; color: #777777; margin-top: 10px;">ID de Reserva: ${reservationId}</p>
+      </div>
+    `;
+
+    const html = this._generateModernHtmlTemplate('Confirmación de Reserva', emailContent);
 
     await transporter.sendMail({
       from,
       to: email,
       subject: 'Reserva confirmada - Reserva Horarios',
-      text: `Hola ${guardianName}, tu reserva fue registrada correctamente.\n\nFecha y hora: ${scheduleDateTime}\n\nAcompanantes:\n${companionsText || '- Sin acompanantes'}`,
+      text: `Hola ${guardianName}, tu reserva fue registrada correctamente.\n\nFecha y hora: ${scheduleDateTime}\n\nAcompanantes:\n${companionsText || '- Sin acompanantes'}\n\nID de Reserva: ${reservationId}\nEnlace de Check-In: ${checkInUrl}`,
       html,
+      attachments: [
+        {
+          filename: 'qrcode.png',
+          content: qrBuffer,
+          cid: 'reservation-qr',
+        },
+      ],
     });
   }
 }

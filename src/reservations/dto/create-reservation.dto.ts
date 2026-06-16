@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { ArrayNotEmpty, IsArray, IsBoolean, IsMongoId, IsObject, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsMongoId, IsObject, IsOptional, IsString, ValidateNested } from 'class-validator';
 
 export class AttendingDependentDto {
   @IsString()
@@ -20,7 +20,6 @@ export class CreateReservationDto {
   guardianParticipates: boolean;
 
   @IsArray()
-  @ArrayNotEmpty()
   @ValidateNested({ each: true })
   @Type(() => AttendingDependentDto)
   attendingDependents: AttendingDependentDto[];

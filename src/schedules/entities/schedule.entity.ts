@@ -17,8 +17,11 @@ export class Schedule extends Document {
 
   @Prop({ required: true })
   maxDependentsPerReservation: number; // El límite "X" de cargas por reserva
+
+  @Prop({ required: false, index: true })
+  eventType?: string; // Ej: 'selva', 'pista'
 }
 
 export const ScheduleSchema = SchemaFactory.createForClass(Schedule);
 
-ScheduleSchema.index({ startTime: 1 }, { unique: true });
+ScheduleSchema.index({ startTime: 1, eventType: 1 }, { unique: true });

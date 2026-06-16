@@ -12,7 +12,7 @@ export class SchedulesService {
   constructor(@InjectModel(Schedule.name) private scheduleModel: Model<Schedule>) {}
 
   async generateDailyBlocks(dto: GenerateBlocksDto) {
-    const { date, startHour, endHour, durationMinutes, totalCapacity, maxDependents } = dto;
+    const { date, startHour, endHour, durationMinutes, totalCapacity, maxDependents, eventType } = dto;
 
     // 1. Convertir fecha/hora local Chile a UTC para persistir sin desfases
     const startTime = chileLocalDateTimeToUtc(date, startHour);
@@ -27,6 +27,7 @@ export class SchedulesService {
         $gte: startTime,
         $lt: endTime,
       },
+      eventType,
     });
 
     if (existingBlocksCount > 0) {
@@ -57,6 +58,7 @@ export class SchedulesService {
         totalCapacity,
         availableSpots: totalCapacity, // Se inicializa lleno
         maxDependentsPerReservation: maxDependents,
+        eventType,
       });
 
       // Avanzamos el reloj a la hora del siguiente bloque
@@ -83,8 +85,9 @@ export class SchedulesService {
     return 'This action adds a new schedule';
   }
 
-  findAll() {
-    return this.scheduleModel.find().sort({ startTime: 1 }).exec();
+  findAll(eventType?: string) {
+    const filter = eventType ? { eventType } : {};
+    return this.scheduleModel.find(filter).sort({ startTime: 1 }).exec();
   }
 
   async findOne(id: string) {
