@@ -9,18 +9,19 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '../auth/enums/role.enum';
 
 @Controller('schedules')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.Admin, Role.Guardian)
 export class SchedulesController {
   constructor(private readonly schedulesService: SchedulesService) {}
 
   @Post('generate-day')
-  // Aquí deberías agregar tus Guards (ej: @UseGuards(JwtAuthGuard, RolesGuard))
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin, Role.Guardian)
   async generateDay(@Body() dto: GenerateBlocksDto) {
     return this.schedulesService.generateDailyBlocks(dto);
   }
 
   @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin, Role.Guardian)
   create(@Body() createScheduleDto: CreateScheduleDto) {
     return this.schedulesService.create(createScheduleDto);
   }
@@ -31,16 +32,22 @@ export class SchedulesController {
   }
 
   @Get(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin, Role.Guardian)
   findOne(@Param('id') id: string) {
     return this.schedulesService.findOne(id);
   }
 
   @Patch(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin, Role.Guardian)
   update(@Param('id') id: string, @Body() updateScheduleDto: UpdateScheduleDto) {
     return this.schedulesService.update(+id, updateScheduleDto);
   }
 
   @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin, Role.Guardian)
   remove(@Param('id') id: string) {
     return this.schedulesService.remove(+id);
   }
