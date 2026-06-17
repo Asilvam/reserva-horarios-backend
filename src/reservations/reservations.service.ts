@@ -75,7 +75,7 @@ export class ReservationsService {
       throw new ConflictException('No hay suficientes cupos disponibles para esta reserva.');
     }
 
-    // 5. Validar si ya existe reserva activa para el día
+    // 5. Validar si ya existe reserva activa para el día y evento específico
     const reservationDay = getChileStartOfDayUtc(schedule.startTime);
     const nextReservationDay = new Date(reservationDay.getTime() + 24 * 60 * 60 * 1000);
 
@@ -85,6 +85,7 @@ export class ReservationsService {
         $gte: reservationDay,
         $lt: nextReservationDay,
       },
+      eventType: schedule.eventType,
       state_reserve: true,
     });
 
@@ -198,11 +199,16 @@ export class ReservationsService {
         patinesRuts.push(rut);
       }
 
+      const expectedRuts = [...attendingRuts];
+      if (dto.guardianParticipates) {
+        expectedRuts.push(guardian.rut);
+      }
+
       const uniquePatinesRuts = new Set(patinesRuts);
-      const hasExactPatinesMatch = patinesRuts.length === attendingRuts.length && uniquePatinesRuts.size === patinesRuts.length && attendingRuts.every((rut) => uniquePatinesRuts.has(rut));
+      const hasExactPatinesMatch = patinesRuts.length === expectedRuts.length && uniquePatinesRuts.size === patinesRuts.length && expectedRuts.every((rut) => uniquePatinesRuts.has(rut));
 
       if (!hasExactPatinesMatch) {
-        throw new BadRequestException('metadata.patines debe coincidir 1:1 con attendingDependents por RUT.');
+        throw new BadRequestException('metadata.patines debe coincidir 1:1 con los asistentes (incluyendo al apoderado si participa) por RUT.');
       }
     }
 
@@ -237,6 +243,7 @@ export class ReservationsService {
               $gte: reservationDay,
               $lt: nextReservationDay,
             },
+            eventType: scheduleInTx.eventType,
             state_reserve: true,
           })
           .session(session);
@@ -279,6 +286,7 @@ export class ReservationsService {
           ...dto,
           totalSpotsConsumed: spotsToConsume,
           reservationDay,
+          eventType: scheduleInTx.eventType,
         });
 
         savedReservation = await newReservation.save({ session });

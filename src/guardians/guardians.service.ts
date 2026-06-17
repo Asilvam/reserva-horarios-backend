@@ -52,6 +52,9 @@ export class GuardiansService {
       guardian.email = createGuardianDto.email;
       if (createGuardianDto.address) guardian.address = createGuardianDto.address;
       if (createGuardianDto.commune) guardian.commune = createGuardianDto.commune;
+      if (createGuardianDto.villa) guardian.villa = createGuardianDto.villa;
+      if (createGuardianDto.emergencyName) guardian.emergencyName = createGuardianDto.emergencyName;
+      if (createGuardianDto.emergencyPhone) guardian.emergencyPhone = createGuardianDto.emergencyPhone;
       guardian.dependents = createGuardianDto.dependents ?? [];
       guardian.acceptMarketing = createGuardianDto.acceptMarketing ?? false;
       guardian.acceptDataTerms = createGuardianDto.acceptDataTerms ?? false;

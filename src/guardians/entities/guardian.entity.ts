@@ -38,6 +38,12 @@ export class Guardian extends Document {
   @Prop({ required: false })
   villa?: string;
 
+  @Prop({ required: false })
+  emergencyName?: string;
+
+  @Prop({ required: false })
+  emergencyPhone?: string;
+
   @Prop({ type: [DependentSchema], default: [] })
   dependents: Dependent[];
 

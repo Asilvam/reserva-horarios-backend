@@ -37,6 +37,14 @@ export class CreateGuardianDto {
   @IsOptional()
   villa?: string;
 
+  @IsString()
+  @IsOptional()
+  emergencyName?: string;
+
+  @IsString()
+  @IsOptional()
+  emergencyPhone?: string;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => DependentDto)

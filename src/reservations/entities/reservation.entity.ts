@@ -43,12 +43,15 @@ export class Reservation extends Document {
 
   @Prop({ required: true, default: true })
   state_reserve: boolean;
+
+  @Prop({ required: false })
+  eventType?: string;
 }
 
 export const ReservationSchema = SchemaFactory.createForClass(Reservation);
 
 ReservationSchema.index(
-  { guardianId: 1, reservationDay: 1 },
+  { guardianId: 1, reservationDay: 1, eventType: 1 },
   {
     unique: true,
     partialFilterExpression: { state_reserve: true },
