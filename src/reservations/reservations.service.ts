@@ -90,7 +90,7 @@ export class ReservationsService {
 
     if (existingReservationForDay) {
       this.logger.warn(`Conflicto al encolar: El apoderado ${dto.guardianId} ya tiene reserva para el dia.`);
-      throw new ConflictException('El apoderado ya tiene una reserva para ese dia.');
+      throw new ConflictException('La persona ya tiene una reserva para ese dia.');
     }
 
     const jobName = 'process-single-reservation';
@@ -243,7 +243,7 @@ export class ReservationsService {
 
         if (existingReservationForDay) {
           this.logger.warn(`Conflicto: El apoderado ${guardianId} ya tiene reserva para el dia.`);
-          throw new ConflictException('El apoderado ya tiene una reserva para ese dia.');
+          throw new ConflictException('La persona ya tiene una reserva para ese dia.');
         }
 
         const updatedScheduleInTx = await this.scheduleModel.findOneAndUpdate(
@@ -287,7 +287,7 @@ export class ReservationsService {
       });
     } catch (error) {
       if (error?.code === 11000) {
-        throw new ConflictException('El apoderado ya tiene una reserva para ese dia.');
+        throw new ConflictException('La persona ya tiene una reserva para ese dia.');
       }
 
       this.logger.error(`Error al guardar reserva: ${error}`);

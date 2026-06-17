@@ -104,13 +104,7 @@ export class MailService {
     });
   }
 
-  async sendReservationConfirmation(
-    email: string,
-    guardianName: string,
-    scheduleDateTime: string,
-    companions: Array<{ name: string; rut: string }>,
-    reservationId: string,
-  ) {
+  async sendReservationConfirmation(email: string, guardianName: string, scheduleDateTime: string, companions: Array<{ name: string; rut: string }>, reservationId: string) {
     const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
     const transporter = this.createTransport();
 
@@ -134,9 +128,7 @@ export class MailService {
       return;
     }
 
-    const companionsHtml = companions
-      .map((companion) => `<li><strong>${companion.name}</strong> (${companion.rut})</li>`)
-      .join('');
+    const companionsHtml = companions.map((companion) => `<li><strong>${companion.name}</strong> (${companion.rut})</li>`).join('');
 
     const companionsText = companions.map((companion) => `- ${companion.name} (${companion.rut})`).join('\n');
 

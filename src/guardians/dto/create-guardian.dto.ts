@@ -33,6 +33,10 @@ export class CreateGuardianDto {
   @IsOptional()
   commune?: string;
 
+  @IsString()
+  @IsOptional()
+  villa?: string;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => DependentDto)

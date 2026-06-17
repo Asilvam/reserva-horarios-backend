@@ -35,6 +35,9 @@ export class Guardian extends Document {
   @Prop({ required: false })
   commune?: string;
 
+  @Prop({ required: false })
+  villa?: string;
+
   @Prop({ type: [DependentSchema], default: [] })
   dependents: Dependent[];
 
