@@ -15,6 +15,11 @@ export class GuardiansController {
     return this.guardiansService.create(createGuardianDto);
   }
 
+  @Get('by-rut/:rut')
+  findByRut(@Param('rut') rut: string) {
+    return this.guardiansService.findByRut(rut);
+  }
+
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin, Role.Guardian)
