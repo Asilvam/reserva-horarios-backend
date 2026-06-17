@@ -81,7 +81,7 @@ export class ReservationsController {
   async renderCheckInHtml(@Param('id') id: string) {
     try {
       const result = await this.reservationsService.getReservationCheckInStatus(id);
-      
+
       const formattedDate = result.reservation.startTime ? new Date(result.reservation.startTime).toLocaleString('es-CL', { timeZone: 'America/Santiago' }) : 'N/A';
       const checkInTime = result.reservation.checkInAt ? new Date(result.reservation.checkInAt).toLocaleString('es-CL', { timeZone: 'America/Santiago' }) : 'N/A';
       const isExpired = result.reservation.isExpired;
@@ -158,23 +158,32 @@ export class ReservationsController {
 
                 <div class="info-group" style="border-bottom: none; padding-bottom: 0; margin-bottom: 20px;">
                   <div class="label">Acompañantes (${result.reservation.attendingDependents.length})</div>
-                  ${result.reservation.attendingDependents.length > 0 ? `
+                  ${
+                    result.reservation.attendingDependents.length > 0
+                      ? `
                     <ul>
-                      ${result.reservation.attendingDependents.map(d => `<li><strong>${d.name}</strong> (${d.rut})</li>`).join('')}
+                      ${result.reservation.attendingDependents.map((d) => `<li><strong>${d.name}</strong> (${d.rut})</li>`).join('')}
                     </ul>
-                  ` : '<div class="value" style="font-style: italic; color: #64748b;">Sin acompañantes</div>'}
+                  `
+                      : '<div class="value" style="font-style: italic; color: #64748b;">Sin acompañantes</div>'
+                  }
                 </div>
 
                 <!-- Formulario de Check-In con PIN -->
-                ${isCheckedIn ? `
+                ${
+                  isCheckedIn
+                    ? `
                   <div class="already-msg">
                     Check-in realizado el ${checkInTime}
                   </div>
-                ` : (isExpired ? `
+                `
+                    : isExpired
+                      ? `
                   <div style="text-align: center; color: #dc2626; font-weight: bold; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 8px;">
                     Reserva Expirada - No es posible realizar Check-In
                   </div>
-                ` : `
+                `
+                      : `
                   <div class="checkin-form">
                     <h3>Confirmación de Inspector</h3>
                     <input type="password" id="pin-input" class="pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="PIN" required />
@@ -214,7 +223,8 @@ export class ReservationsController {
                       }
                     }
                   </script>
-                `)}
+                `
+                }
               </div>
             </div>
           </body>

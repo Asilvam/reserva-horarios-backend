@@ -5,15 +5,7 @@ import { Model, Types } from 'mongoose';
 import { Reservation } from './entities/reservation.entity';
 import { Schedule } from '../schedules/entities/schedule.entity';
 import * as QRCode from 'qrcode';
-import {
-  Injectable,
-  BadRequestException,
-  ConflictException,
-  NotFoundException,
-  ForbiddenException,
-  InternalServerErrorException,
-  Logger,
-} from '@nestjs/common';
+import { Injectable, BadRequestException, ConflictException, NotFoundException, ForbiddenException, InternalServerErrorException, Logger } from '@nestjs/common';
 import { GuardiansService } from '../guardians/guardians.service';
 import { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { Role } from '../auth/enums/role.enum';
@@ -44,6 +36,63 @@ export class ReservationsService {
   ) {}
 
   async enqueueReservation(dto: CreateReservationDto, authUser?: AuthUser): Promise<{ success: boolean; message: string; jobId: string | undefined }> {
+    // 1. Validaciones preliminares de seguridad
+    if (authUser && authUser.role === Role.Guardian) {
+      if (!authUser.guardianId) {
+        this.logger.warn(`Guardian sin guardianId asociado en encolamiento.`);
+        throw new ForbiddenException('Tu usuario no tiene un apoderado asociado.');
+      }
+
+      if (dto.guardianId !== authUser.guardianId) {
+        this.logger.warn(`Guardian intentando reservar para otro apoderado en encolamiento (${dto.guardianId}).`);
+        throw new ForbiddenException('No puedes crear reservas para otro apoderado.');
+      }
+    }
+
+    // 2. Validar existencia del horario
+    const schedule = await this.scheduleModel.findById(dto.scheduleId);
+    if (!schedule) {
+      this.logger.error(`Horario no encontrado al encolar: scheduleId=${dto.scheduleId}`);
+      throw new BadRequestException('Horario no encontrado');
+    }
+
+    // 3. Validar si el horario ya caducó
+    const now = new Date();
+    if (schedule.startTime <= now) {
+      this.logger.warn(`Intento de reserva para horario caducado al encolar: scheduleId=${dto.scheduleId}`);
+      throw new BadRequestException('No se puede reservar un horario que ya caducó.');
+    }
+
+    // 4. Validar consumo de cupos
+    const spotsToConsume = (dto.guardianParticipates ? 1 : 0) + dto.attendingDependents.length;
+    if (spotsToConsume === 0) {
+      this.logger.warn(`Reserva sin consumo de cupos al encolar para guardianId=${dto.guardianId}.`);
+      throw new BadRequestException('La reserva debe consumir al menos 1 cupo.');
+    }
+
+    if (schedule.availableSpots < spotsToConsume) {
+      this.logger.warn(`Sin cupos suficientes al encolar para guardianId=${dto.guardianId} en scheduleId=${dto.scheduleId}.`);
+      throw new ConflictException('No hay suficientes cupos disponibles para esta reserva.');
+    }
+
+    // 5. Validar si ya existe reserva activa para el día
+    const reservationDay = getChileStartOfDayUtc(schedule.startTime);
+    const nextReservationDay = new Date(reservationDay.getTime() + 24 * 60 * 60 * 1000);
+
+    const existingReservationForDay = await this.reservationModel.exists({
+      guardianId: dto.guardianId,
+      reservationDay: {
+        $gte: reservationDay,
+        $lt: nextReservationDay,
+      },
+      state_reserve: true,
+    });
+
+    if (existingReservationForDay) {
+      this.logger.warn(`Conflicto al encolar: El apoderado ${dto.guardianId} ya tiene reserva para el dia.`);
+      throw new ConflictException('El apoderado ya tiene una reserva para ese dia.');
+    }
+
     const jobName = 'process-single-reservation';
 
     const job = await this.reservationQueue.add(
@@ -188,6 +237,7 @@ export class ReservationsService {
               $gte: reservationDay,
               $lt: nextReservationDay,
             },
+            state_reserve: true,
           })
           .session(session);
 
@@ -411,8 +461,8 @@ export class ReservationsService {
     }
 
     const reservation = await this.reservationModel.findById(id).exec();
-    if (!reservation) {
-      throw new NotFoundException('Reserva no encontrada');
+    if (!reservation || reservation.state_reserve === false) {
+      throw new NotFoundException('Reserva no encontrada o inactiva');
     }
 
     const guardian = await this.guardiansService.findById(reservation.guardianId.toString());
