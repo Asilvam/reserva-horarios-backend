@@ -9,7 +9,7 @@ export class Guardian extends Document {
   @Prop({ required: true, unique: true })
   rut: string;
 
-  @Prop({ required: true })
+  @Prop({ required: true, unique: true })
   email: string;
 
   @Prop({ required: true, unique: true })
