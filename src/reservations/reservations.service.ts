@@ -555,6 +555,7 @@ export class ReservationsService {
         checkInAt: reservation.checkInAt,
         isExpired,
         status: isExpired ? 'EXPIRADA' : (reservation.isCheckedIn ? 'CHECKED_IN' : 'VIGENTE'),
+        eventType: schedule?.eventType,
       },
     };
   }
@@ -669,6 +670,11 @@ export class ReservationsService {
                 <div id="status-badge" class="status-badge"></div>
                 
                 <div class="info-group">
+                  <div class="label">Evento</div>
+                  <div id="event-name" class="value" style="font-weight: bold; color: #0f766e;"></div>
+                </div>
+
+                <div class="info-group">
                   <div class="label">Inscrito</div>
                   <div id="guardian-name" class="value"></div>
                   <div id="guardian-rut-email" class="value" style="font-size: 14px; color: #64748b; margin-top: 2px;"></div>
@@ -747,6 +753,14 @@ export class ReservationsService {
                 
                 sessionStorage.setItem('inspector_pin', pin);
                 
+                const eventNames = {
+                  selva: 'Selva Viva',
+                  patines: 'Pista de Hielo'
+                };
+                const eventNameText = eventNames[reservation.eventType] || 'Evento General';
+                const elEvent = document.getElementById('event-name');
+                if (elEvent) elEvent.innerText = eventNameText;
+
                 const elName = document.getElementById('guardian-name');
                 if (elName) elName.innerText = reservation.guardianName;
 
