@@ -606,6 +606,12 @@ export class ReservationsService {
       throw new NotFoundException('Reserva no encontrada');
     }
 
+    if (reservation.checkMail !== null && reservation.checkMail !== undefined) {
+      throw new ConflictException(
+        `Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} anteriormente por correo.`
+      );
+    }
+
     if (!reservation.state_reserve) {
       throw new BadRequestException('Esta reserva ya no está activa.');
     }
@@ -630,6 +636,12 @@ export class ReservationsService {
 
         if (!reservation) {
           throw new NotFoundException('Reserva no encontrada');
+        }
+
+        if (reservation.checkMail !== null && reservation.checkMail !== undefined) {
+          throw new ConflictException(
+            `Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} anteriormente por correo.`
+          );
         }
 
         if (!reservation.state_reserve) {
