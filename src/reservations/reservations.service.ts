@@ -705,34 +705,35 @@ export class ReservationsService {
     return cancelledReservation;
   }
 
-  async expireReservation(id: string): Promise<void> {
+  async expireReservation(id: string): Promise<{ success: boolean; message: string }> {
     if (!Types.ObjectId.isValid(id)) {
       this.logger.warn(`Id de reserva inválido para expiración: ${id}`);
-      return;
+      return { success: false, message: 'Id de reserva inválido.' };
     }
 
     const session = await this.reservationModel.db.startSession();
     let updatedScheduleAfterExpiry: any = null;
     let expiredReservation: any = null;
+    let skipReason = '';
 
     try {
       await session.withTransaction(async () => {
         const reservation = await this.reservationModel.findById(id).session(session);
 
         if (!reservation) {
-          this.logger.warn(`Intento de expiración: Reserva ${id} no encontrada.`);
+          skipReason = 'Reserva no encontrada';
           return;
         }
 
         // Si ya fue confirmada (por correo o Whatsapp), no hacemos nada y cancelamos expiración
         if (reservation.checkMail === true || reservation.checkWsp === true) {
-          this.logger.log(`Reserva ${id} ya confirmada anteriormente por correo o Whatsapp. Omitiendo expiración.`);
+          skipReason = 'Reserva confirmada anteriormente por correo o Whatsapp';
           return;
         }
 
         // Si la reserva ya fue cancelada/inactivada por otra razón, no hacemos nada
         if (!reservation.state_reserve) {
-          this.logger.log(`Reserva ${id} ya está inactiva. Omitiendo expiración.`);
+          skipReason = 'Reserva ya se encuentra inactiva';
           return;
         }
 
@@ -758,8 +759,14 @@ export class ReservationsService {
       });
     } catch (err) {
       this.logger.error(`Error al procesar la expiración automática de la reserva ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      throw err; // Lanzamos el error para que BullMQ registre el fallo y reintente si corresponde
     } finally {
       await session.endSession();
+    }
+
+    if (skipReason) {
+      this.logger.log(`Expiración de reserva ${id} omitida. Razón: ${skipReason}`);
+      return { success: false, message: `Expiración omitida: ${skipReason}` };
     }
 
     if (updatedScheduleAfterExpiry && expiredReservation) {
@@ -768,6 +775,9 @@ export class ReservationsService {
         expiredReservation.scheduleId.toString(),
         updatedScheduleAfterExpiry.availableSpots
       );
+      return { success: true, message: 'Reserva expirada automáticamente por inactividad y cupos liberados.' };
     }
+
+    return { success: false, message: 'No se pudo expirar la reserva.' };
   }
 }
