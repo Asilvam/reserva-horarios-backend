@@ -835,20 +835,21 @@ export class ReservationsService {
                 const actionContainer = document.getElementById('action-container');
                 if (actionContainer) {
                   if (isCheckedIn) {
-                    const checkInTime = new Date(reservation.checkInAt).toLocaleString('es-CL', {
+                    const checkInTime = new Intl.DateTimeFormat('es-CL', {
                       timeZone: 'America/Santiago',
                       day: '2-digit',
                       month: '2-digit',
                       year: 'numeric',
                       hour: '2-digit',
                       minute: '2-digit',
-                      second: '2-digit'
-                    });
+                      second: '2-digit',
+                      hour12: false
+                    }).format(new Date(reservation.checkInAt)).replace(',', '');
                     if (justCheckedIn) {
                       actionContainer.innerHTML = \`
                         <div class="already-msg" style="background-color: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 18px; border-radius: 10px; text-align: center; margin-top: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                           <div style="font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; color: #15803d;">¡Check-in Registrado Ahora!</div>
-                          <div style="font-size: 22px; font-weight: 800; color: #166534; margin: 4px 0; font-family: monospace;">\${checkInTime}</div>
+                          <div style="font-size: 18px; font-weight: 800; color: #166534; margin: 6px 0; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">\\\${checkInTime}</div>
                           <div style="font-size: 13px; color: #14532d; font-weight: 500;">Entrada autorizada exitosamente.</div>
                         </div>
                       \`;
@@ -856,7 +857,7 @@ export class ReservationsService {
                       actionContainer.innerHTML = \`
                         <div class="already-msg" style="background-color: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 18px; border-radius: 10px; text-align: center; margin-top: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                           <div style="font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; color: #b91c1c;">Check-In Realizado Anteriormente</div>
-                          <div style="font-size: 22px; font-weight: 800; color: #b91c1c; margin: 4px 0; font-family: monospace;">\${checkInTime}</div>
+                          <div style="font-size: 18px; font-weight: 800; color: #b91c1c; margin: 6px 0; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">\\\${checkInTime}</div>
                           <div style="font-size: 13px; color: #7f1d1d; font-weight: 600; margin-top: 8px;">⚠️ ALERTA: Esta entrada ya fue utilizada.</div>
                         </div>
                       \`;
