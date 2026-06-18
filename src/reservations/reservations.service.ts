@@ -40,12 +40,12 @@ export class ReservationsService {
     if (authUser && authUser.role === Role.Guardian) {
       if (!authUser.guardianId) {
         this.logger.warn(`Guardian sin guardianId asociado en encolamiento.`);
-        throw new ForbiddenException('Tu usuario no tiene un apoderado asociado.');
+        throw new ForbiddenException('Tu usuario no tiene un inscrito asociado.');
       }
 
       if (dto.guardianId !== authUser.guardianId) {
-        this.logger.warn(`Guardian intentando reservar para otro apoderado en encolamiento (${dto.guardianId}).`);
-        throw new ForbiddenException('No puedes crear reservas para otro apoderado.');
+        this.logger.warn(`Guardian intentando reservar para otro inscrito en encolamiento (${dto.guardianId}).`);
+        throw new ForbiddenException('No puedes crear reservas para otro inscrito.');
       }
     }
 
@@ -90,7 +90,7 @@ export class ReservationsService {
     });
 
     if (existingReservationForDay) {
-      this.logger.warn(`Conflicto al encolar: El apoderado ${dto.guardianId} ya tiene reserva para el dia.`);
+      this.logger.warn(`Conflicto al encolar: El inscrito ${dto.guardianId} ya tiene reserva para el dia.`);
       throw new ConflictException('La persona ya tiene una reserva para ese dia.');
     }
 
@@ -150,12 +150,12 @@ export class ReservationsService {
     if (authUser && authUser.role === Role.Guardian) {
       if (!authUser.guardianId) {
         this.logger.warn(`Guardian sin guardianId asociado.`);
-        throw new ForbiddenException('Tu usuario no tiene un apoderado asociado.');
+        throw new ForbiddenException('Tu usuario no tiene un inscrito asociado.');
       }
 
       if (dto.guardianId !== authUser.guardianId) {
-        this.logger.warn(`Guardian  intentando reservar para otro apoderado (${dto.guardianId}).`);
-        throw new ForbiddenException('No puedes crear reservas para otro apoderado.');
+        this.logger.warn(`Guardian  intentando reservar para otro inscrito (${dto.guardianId}).`);
+        throw new ForbiddenException('No puedes crear reservas para otro inscrito.');
       }
     }
 
@@ -184,7 +184,7 @@ export class ReservationsService {
       throw new BadRequestException('No se permiten RUTs duplicados en asistentes.');
     }
 
-    // Ya no se requiere validar que los acompañantes pertenezcan rígidamente al apoderado.
+    // Ya no se requiere validar que los acompañantes pertenezcan rígidamente al inscrito.
     // Esta validación restrictiva ha sido removida para flexibilizar grupos familiares.
 
     if (attendingDependentsCount > schedule.maxDependentsPerReservation) {
@@ -226,7 +226,7 @@ export class ReservationsService {
       const hasExactPatinesMatch = patinesRuts.length === expectedRuts.length && uniquePatinesRuts.size === patinesRuts.length && expectedRuts.every((rut) => uniquePatinesRuts.has(rut));
 
       if (!hasExactPatinesMatch) {
-        throw new BadRequestException('metadata.patines debe coincidir 1:1 con los asistentes (incluyendo al apoderado si participa) por RUT.');
+        throw new BadRequestException('metadata.patines debe coincidir 1:1 con los asistentes (incluyendo al inscrito si participa) por RUT.');
       }
     }
 
@@ -267,7 +267,7 @@ export class ReservationsService {
           .session(session);
 
         if (existingReservationForDay) {
-          this.logger.warn(`Conflicto: El apoderado ${guardianId} ya tiene reserva para el dia.`);
+          this.logger.warn(`Conflicto: El inscrito ${guardianId} ya tiene reserva para el dia.`);
           throw new ConflictException('La persona ya tiene una reserva para ese dia.');
         }
 
@@ -425,7 +425,7 @@ export class ReservationsService {
   findAll(authUser: AuthUser) {
     if (authUser.role === Role.Guardian) {
       if (!authUser.guardianId) {
-        throw new ForbiddenException('Tu usuario no tiene un apoderado asociado.');
+        throw new ForbiddenException('Tu usuario no tiene un inscrito asociado.');
       }
 
       return this.reservationModel.find({ guardianId: authUser.guardianId }).sort({ createdAt: -1 }).exec();
@@ -447,7 +447,7 @@ export class ReservationsService {
 
     if (authUser.role === Role.Guardian) {
       if (!authUser.guardianId || authUser.guardianId !== reservation.guardianId.toString()) {
-        throw new ForbiddenException('No puedes ver una reserva de otro apoderado.');
+        throw new ForbiddenException('No puedes ver una reserva de otro inscrito.');
       }
     }
 
@@ -481,8 +481,8 @@ export class ReservationsService {
 
         if (authUser.role === Role.Guardian) {
           if (!authUser.guardianId || authUser.guardianId !== reservation.guardianId.toString()) {
-            this.logger.warn(`Guardian intentando eliminar reserva de otro apoderado (${reservation.guardianId}).`);
-            throw new ForbiddenException('No puedes eliminar una reserva de otro apoderado.');
+            this.logger.warn(`Guardian intentando eliminar reserva de otro inscrito (${reservation.guardianId}).`);
+            throw new ForbiddenException('No puedes eliminar una reserva de otro inscrito.');
           }
         }
 
@@ -598,9 +598,497 @@ export class ReservationsService {
     };
   }
 
+  async getReservationCheckInDetails(id: string, pin: string) {
+    const expectedPin = process.env.INSPECTOR_PIN || '1234';
+    if (!pin || pin.trim() !== expectedPin.trim()) {
+      throw new ForbiddenException('PIN de inspector incorrecto o no suministrado.');
+    }
+    return this.getReservationCheckInStatus(id);
+  }
+
+  getCheckInHtmlPage(): string {
+    return `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Validación de Reserva</title>
+          <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; }
+            .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; }
+            .header { background: #0f766e; color: white; padding: 20px; text-align: center; }
+            .header h1 { margin: 0; font-size: 20px; }
+            .content { padding: 24px; }
+            .status-badge { display: inline-block; padding: 10px 12px; border-radius: 8px; font-weight: bold; color: white; margin-bottom: 20px; text-align: center; width: calc(100% - 24px); font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; }
+            .info-group { margin-bottom: 16px; border-bottom: 1px solid #f1f5f9; padding-bottom: 12px; }
+            .label { font-size: 12px; color: #64748b; font-weight: 600; text-transform: uppercase; margin-bottom: 4px; }
+            .value { font-size: 16px; font-weight: 500; }
+            ul { margin: 0; padding-left: 20px; }
+            li { font-size: 15px; margin-bottom: 4px; }
+            
+            .pin-form { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; text-align: center; margin-top: 10px; }
+            .pin-form h3 { margin-top: 0; margin-bottom: 12px; font-size: 16px; color: #0f766e; }
+            .pin-input { width: calc(100% - 24px); padding: 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 18px; text-align: center; margin-bottom: 16px; letter-spacing: 0.25em; font-family: monospace; font-weight: bold; }
+            .pin-input:focus { outline: none; border-color: #0f766e; box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.15); }
+            .submit-btn { width: 100%; padding: 12px; background-color: #0f766e; color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: bold; cursor: pointer; transition: background-color 0.2s; }
+            .submit-btn:hover { background-color: #0d9488; }
+            .submit-btn:disabled { background-color: #94a3b8; cursor: not-allowed; }
+            
+            .already-msg { text-align: center; font-weight: bold; color: #16a34a; background-color: #f0fdf4; border: 1px solid #bbf7d0; padding: 12px; border-radius: 8px; margin-top: 10px; }
+            .error-msg { color: #dc2626; font-weight: bold; background: #fef2f2; border: 1px solid #fecaca; padding: 16px; border-radius: 8px; margin-bottom: 20px; text-align: center; }
+            
+            .hidden { display: none; }
+            .spinner { border: 4px solid rgba(0, 0, 0, 0.1); width: 36px; height: 36px; border-radius: 50%; border-left-color: #0f766e; animation: spin 1s linear infinite; margin: 20px auto; }
+            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="header">
+              <h1>Validador de Entrada</h1>
+            </div>
+            
+            <div class="content">
+              <!-- SECCIÓN DE CARGA -->
+              <div id="loading-section" class="hidden">
+                <div class="spinner"></div>
+                <p style="text-align: center; color: #64748b;">Verificando credenciales...</p>
+              </div>
+
+              <!-- SECCIÓN PIN (SOLICITUD) -->
+              <div id="pin-section" class="pin-form hidden">
+                <h3>Ingresar PIN de Inspector</h3>
+                <p style="font-size: 13px; color: #64748b; margin-bottom: 16px;">Ingrese el PIN de seguridad para visualizar la información confidencial de la reserva.</p>
+                <input type="password" id="pin-input" class="pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="PIN" required />
+                <button id="unlock-btn" class="submit-btn" onclick="unlockDetails()">Verificar PIN</button>
+              </div>
+
+              <!-- SECCIÓN DE DETALLES (DESBLOQUEADA) -->
+              <div id="details-section" class="hidden">
+                <div id="status-badge" class="status-badge"></div>
+                
+                <div class="info-group">
+                  <div class="label">Inscrito</div>
+                  <div id="guardian-name" class="value"></div>
+                  <div id="guardian-rut-email" class="value" style="font-size: 14px; color: #64748b; margin-top: 2px;"></div>
+                </div>
+
+                <div class="info-group">
+                  <div class="label">Horario Reservado</div>
+                  <div id="reservation-time" class="value"></div>
+                  <div id="reservation-duration" class="value" style="font-size: 14px; color: #64748b; margin-top: 2px;"></div>
+                </div>
+
+                <div class="info-group">
+                  <div class="label">Estado de Check-In</div>
+                  <div id="checkin-status" class="value"></div>
+                  <div id="checkin-time" class="value" style="font-size: 14px; color: #64748b; margin-top: 2px;"></div>
+                </div>
+
+                <div class="info-group" style="border-bottom: none; padding-bottom: 0; margin-bottom: 20px;">
+                  <div id="dependents-label" class="label">Acompañantes</div>
+                  <div id="dependents-list-container"></div>
+                </div>
+
+                <!-- Acciones de Check-In -->
+                <div id="action-container"></div>
+              </div>
+
+              <!-- SECCIÓN DE ERROR -->
+              <div id="error-section" class="hidden">
+                <div id="error-msg-box" class="error-msg"></div>
+                <p id="error-subtitle" style="color: #64748b; font-size: 14px; text-align: center;"></p>
+                <button id="retry-btn" class="submit-btn" onclick="resetView()" style="margin-top: 10px;">Reintentar</button>
+              </div>
+            </div>
+          </div>
+
+          <script>
+            const pathParts = window.location.pathname.split('/');
+            const reservationId = pathParts[pathParts.length - 2];
+            
+            window.onload = function() {
+              const storedPin = sessionStorage.getItem('inspector_pin');
+              if (storedPin) {
+                fetchDetails(storedPin);
+              } else {
+                showSection('pin-section');
+              }
+            };
+
+            function showSection(sectionId) {
+              document.getElementById('loading-section').classList.add('hidden');
+              document.getElementById('pin-section').classList.add('hidden');
+              document.getElementById('details-section').classList.add('hidden');
+              document.getElementById('error-section').classList.add('hidden');
+              
+              document.getElementById(sectionId).classList.remove('hidden');
+            }
+
+            function resetView() {
+              sessionStorage.removeItem('inspector_pin');
+              document.getElementById('pin-input').value = '';
+              showSection('pin-section');
+            }
+
+            async function unlockDetails() {
+              const pin = document.getElementById('pin-input').value;
+              if (!pin) {
+                alert('Por favor ingrese el PIN.');
+                return;
+              }
+              fetchDetails(pin);
+            }
+
+            async function fetchDetails(pin) {
+              showSection('loading-section');
+              try {
+                const res = await fetch('/reservations/' + reservationId + '/check-in-details', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({ pin: pin })
+                });
+                
+                if (!res.ok) {
+                  const data = await res.json();
+                  throw new Error(data.message || 'Código PIN inválido.');
+                }
+
+                const responseData = await res.json();
+                const reservation = responseData.reservation;
+                
+                sessionStorage.setItem('inspector_pin', pin);
+                
+                document.getElementById('guardian-name').innerText = reservation.guardianName;
+                document.getElementById('guardian-rut-email').innerText = 'RUT: ' + reservation.guardianRut + ' | ' + reservation.guardianEmail;
+                
+                const formattedDate = reservation.startTime ? new Date(reservation.startTime).toLocaleString('es-CL', { timeZone: 'America/Santiago' }) : 'N/A';
+                document.getElementById('reservation-time').innerText = formattedDate + ' hrs';
+                document.getElementById('reservation-duration').innerText = 'Duración: ' + reservation.durationMinutes + ' minutos';
+                
+                const isExpired = reservation.isExpired;
+                const isCheckedIn = reservation.isCheckedIn;
+                
+                const badge = document.getElementById('status-badge');
+                let statusText = 'VIGENTE / PENDIENTE DE CHECK-IN';
+                let badgeColor = '#0284c7';
+                
+                if (isExpired) {
+                  statusText = 'EXPIRADA / HORARIO PASADO';
+                  badgeColor = '#dc2626';
+                } else if (isCheckedIn) {
+                  statusText = 'CHECK-IN REALIZADO';
+                  badgeColor = '#16a34a';
+                }
+                
+                badge.innerText = statusText;
+                badge.style.backgroundColor = badgeColor;
+
+                document.getElementById('checkin-status').innerText = isCheckedIn ? 'Realizado / Acceso Permitido' : 'Pendiente';
+                if (isCheckedIn && reservation.checkInAt) {
+                  const checkInTime = new Date(reservation.checkInAt).toLocaleString('es-CL', { timeZone: 'America/Santiago' });
+                  document.getElementById('checkin-time').innerText = 'Ingreso: ' + checkInTime + ' hrs';
+                  document.getElementById('checkin-time').classList.remove('hidden');
+                } else {
+                  document.getElementById('checkin-time').innerText = '';
+                  document.getElementById('checkin-time').classList.add('hidden');
+                }
+
+                const deps = reservation.attendingDependents || [];
+                document.getElementById('dependents-label').innerText = 'Acompañantes (' + deps.length + ')';
+                const container = document.getElementById('dependents-list-container');
+                if (deps.length > 0) {
+                  let html = '<ul>';
+                  deps.forEach(function(d) {
+                    html += '<li><strong>' + d.name + '</strong> (' + d.rut + ')</li>';
+                  });
+                  html += '</ul>';
+                  container.innerHTML = html;
+                } else {
+                  container.innerHTML = '<div class="value" style="font-style: italic; color: #64748b;">Sin acompañantes</div>';
+                }
+
+                const actionContainer = document.getElementById('action-container');
+                if (isCheckedIn) {
+                  const checkInTime = new Date(reservation.checkInAt).toLocaleString('es-CL', { timeZone: 'America/Santiago' });
+                  actionContainer.innerHTML = '<div class="already-msg">Check-in realizado el ' + checkInTime + '</div>';
+                } else if (isExpired) {
+                  actionContainer.innerHTML = '<div style="text-align: center; color: #dc2626; font-weight: bold; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 8px;">Reserva Expirada - No es posible realizar Check-In</div>';
+                } else {
+                  actionContainer.innerHTML = '<div class="pin-form" style="border: none; padding: 0;"><button id="submit-btn" class="submit-btn" onclick="submitCheckIn(\'' + pin + '\')">Autorizar Entrada</button></div>';
+                }
+
+                showSection('details-section');
+
+              } catch (err) {
+                sessionStorage.removeItem('inspector_pin');
+                document.getElementById('error-msg-box').innerText = err.message || 'Error de autenticación';
+                document.getElementById('error-subtitle').innerText = 'El código QR podría ser inválido, o el PIN ingresado no es correcto.';
+                showSection('error-section');
+              }
+            }
+
+            async function submitCheckIn(pin) {
+              const btn = document.getElementById('submit-btn');
+              btn.disabled = true;
+              btn.innerText = 'Procesando...';
+              try {
+                const res = await fetch('/reservations/' + reservationId + '/check-in', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({ pin: pin })
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                  alert(data.message);
+                  fetchDetails(pin);
+                } else {
+                  alert(data.message || 'Error al realizar check-in.');
+                  btn.disabled = false;
+                  btn.innerText = 'Autorizar Entrada';
+                }
+              } catch (err) {
+                alert('Error de red al conectar con el servidor.');
+                btn.disabled = false;
+                btn.innerText = 'Autorizar Entrada';
+              }
+            }
+          </script>
+        </body>
+      </html>
+    `;
+  }
+
+  async confirmEmailHtmlPage(id: string): Promise<string> {
+    try {
+      const reservation = await this.confirmEmail(id);
+      const formattedDate = reservation.reservationDay
+        ? new Date(reservation.reservationDay).toLocaleDateString('es-CL', { timeZone: 'America/Santiago', day: 'numeric', month: 'long', year: 'numeric' })
+        : 'N/A';
+
+      return `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Asistencia Confirmada</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+              .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+              .header { background: #10b981; color: white; padding: 24px; }
+              .header h1 { margin: 0; font-size: 22px; }
+              .content { padding: 30px; }
+              .icon { font-size: 48px; color: #10b981; margin-bottom: 16px; }
+              .info { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 20px 0; font-size: 15px; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="header">
+                <h1>¡Asistencia Confirmada!</h1>
+              </div>
+              <div class="content">
+                <div class="icon">✓</div>
+                <p style="font-size: 16px; line-height: 1.5; color: #334155;">Muchas gracias. Hemos registrado la confirmación de tu asistencia para la reserva.</p>
+                <div class="info">
+                  <strong>Fecha de Reserva:</strong><br/>
+                  \${formattedDate}
+                </div>
+                <p style="font-size: 13px; color: #64748b;">Te sugerimos llegar con 20 minutos de anticipación al recinto.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+    } catch (error: any) {
+      if (error.status === 409 || error.message?.includes('anteriormente por correo')) {
+        return `
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Reserva Ya Gestionada</title>
+              <style>
+                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+                .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+                .header { background: #d97706; color: white; padding: 24px; }
+                .header h1 { margin: 0; font-size: 22px; }
+                .content { padding: 30px; }
+                .icon { font-size: 48px; color: #d97706; margin-bottom: 16px; }
+                .warning-box { background-color: #fffbeb; border: 1px solid #fef3c7; color: #b45309; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; line-height: 1.5; text-align: left; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <div class="header">
+                  <h1>Reserva Ya Gestionada</h1>
+                </div>
+                <div class="content">
+                  <div class="icon">⚠</div>
+                  <p style="font-size: 16px; line-height: 1.5; color: #334155;">Esta invitación ya ha sido respondida previamente.</p>
+                  <div class="warning-box">
+                    <strong>Detalle:</strong><br/>
+                    \${error.message}
+                  </div>
+                  <p style="font-size: 13px; color: #64748b; margin-top: 15px;">No se permiten más cambios de estado desde el correo electrónico. Si tienes dudas o necesitas modificar tu respuesta, comunícate con soporte.</p>
+                </div>
+              </div>
+            </body>
+          </html>
+        `;
+      }
+
+      return `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Error al Confirmar</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+              .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+              .header { background: #dc2626; color: white; padding: 24px; }
+              .header h1 { margin: 0; font-size: 22px; }
+              .content { padding: 30px; }
+              .error-box { background-color: #fef2f2; border: 1px solid #fecaca; color: #991b1b; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="header">
+                <h1>Error</h1>
+              </div>
+              <div class="content">
+                <div class="error-box">
+                  \${error.message || 'No se pudo procesar la confirmación. Por favor, intenta de nuevo o comunícate con soporte.'}
+                </div>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+    }
+  }
+
+  async cancelEmailHtmlPage(id: string): Promise<string> {
+    try {
+      await this.cancelEmail(id);
+      return `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Reserva Cancelada</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+              .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+              .header { background: #ef4444; color: white; padding: 24px; }
+              .header h1 { margin: 0; font-size: 22px; }
+              .content { padding: 30px; }
+              .icon { font-size: 48px; color: #ef4444; margin-bottom: 16px; }
+              .info { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 20px 0; font-size: 15px; color: #475569; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="header">
+                <h1>Reserva Cancelada</h1>
+              </div>
+              <div class="content">
+                <div class="icon">✓</div>
+                <p style="font-size: 16px; line-height: 1.5; color: #334155;">Tu reserva ha sido cancelada exitosamente y los cupos han sido liberados.</p>
+                <div class="info">
+                  Hemos actualizado el sistema para notificar al equipo que no asistirás. Puedes realizar una nueva reserva en nuestro sitio web cuando lo desees.
+                </div>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+    } catch (error: any) {
+      if (error.status === 409 || error.message?.includes('anteriormente por correo')) {
+        return `
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Reserva Ya Gestionada</title>
+              <style>
+                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+                .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+                .header { background: #d97706; color: white; padding: 24px; }
+                .header h1 { margin: 0; font-size: 22px; }
+                .content { padding: 30px; }
+                .icon { font-size: 48px; color: #d97706; margin-bottom: 16px; }
+                .warning-box { background-color: #fffbeb; border: 1px solid #fef3c7; color: #b45309; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; line-height: 1.5; text-align: left; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <div class="header">
+                  <h1>Reserva Ya Gestionada</h1>
+                </div>
+                <div class="content">
+                  <div class="icon">⚠</div>
+                  <p style="font-size: 16px; line-height: 1.5; color: #334155;">Esta invitación ya ha sido respondida previamente.</p>
+                  <div class="warning-box">
+                    <strong>Detalle:</strong><br/>
+                    \${error.message}
+                  </div>
+                  <p style="font-size: 13px; color: #64748b; margin-top: 15px;">No se permiten más cambios de estado desde el correo electrónico. Si tienes dudas o necesitas modificar tu respuesta, comunícate con soporte.</p>
+                </div>
+              </div>
+            </body>
+          </html>
+        `;
+      }
+
+      return `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Error al Cancelar</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+              .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+              .header { background: #dc2626; color: white; padding: 24px; }
+              .header h1 { margin: 0; font-size: 22px; }
+              .content { padding: 30px; }
+              .error-box { background-color: #fef2f2; border: 1px solid #fecaca; color: #991b1b; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="header">
+                <h1>Error</h1>
+              </div>
+              <div class="content">
+                <div class="error-box">
+                  \${error.message || 'No se pudo procesar la cancelación. Por favor, intenta de nuevo o comunícate con soporte.'}
+                </div>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+    }
+  }
+
   async findByGuardianId(guardianId: string) {
     if (!Types.ObjectId.isValid(guardianId)) {
-      throw new BadRequestException('Id de apoderado invalido');
+      throw new BadRequestException('Id de inscrito invalido');
     }
     return this.reservationModel.findOne({ guardianId }).sort({ createdAt: -1 }).exec();
   }
