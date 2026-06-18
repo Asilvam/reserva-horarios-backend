@@ -650,8 +650,8 @@ export class ReservationsService {
             </div>
             
             <div class="content">
-              <!-- SECCIÓN DE CARGA -->
-              <div id="loading-section" class="hidden">
+              <!-- SECCIÓN DE CARGA (Visible por defecto) -->
+              <div id="loading-section">
                 <div class="spinner"></div>
                 <p style="text-align: center; color: #64748b;">Verificando credenciales...</p>
               </div>
@@ -705,40 +705,25 @@ export class ReservationsService {
           </div>
 
           <script>
-            const pathParts = window.location.pathname.split('/');
-            const reservationId = pathParts[pathParts.length - 2];
-            
-            window.onload = function() {
-              const storedPin = sessionStorage.getItem('inspector_pin');
-              if (storedPin) {
-                fetchDetails(storedPin);
-              } else {
-                showSection('pin-section');
-              }
-            };
+            // Extraer ID de reserva de forma robusta por strings
+            const path = window.location.pathname;
+            const prefix = '/reservations/';
+            const idx = path.indexOf(prefix);
+            const reservationId = idx !== -1 ? path.substring(idx + prefix.length).split('/')[0] : '';
 
+            // Safe helper to show a section
             function showSection(sectionId) {
-              document.getElementById('loading-section').classList.add('hidden');
-              document.getElementById('pin-section').classList.add('hidden');
-              document.getElementById('details-section').classList.add('hidden');
-              document.getElementById('error-section').classList.add('hidden');
-              
-              document.getElementById(sectionId).classList.remove('hidden');
-            }
-
-            function resetView() {
-              sessionStorage.removeItem('inspector_pin');
-              document.getElementById('pin-input').value = '';
-              showSection('pin-section');
-            }
-
-            async function unlockDetails() {
-              const pin = document.getElementById('pin-input').value;
-              if (!pin) {
-                alert('Por favor ingrese el PIN.');
-                return;
-              }
-              fetchDetails(pin);
+              const sections = ['loading-section', 'pin-section', 'details-section', 'error-section'];
+              sections.forEach(function(id) {
+                const el = document.getElementById(id);
+                if (el) {
+                  if (id === sectionId) {
+                    el.classList.remove('hidden');
+                  } else {
+                    el.classList.add('hidden');
+                  }
+                }
+              });
             }
 
             async function fetchDetails(pin) {
@@ -762,79 +747,107 @@ export class ReservationsService {
                 
                 sessionStorage.setItem('inspector_pin', pin);
                 
-                document.getElementById('guardian-name').innerText = reservation.guardianName;
-                document.getElementById('guardian-rut-email').innerText = 'RUT: ' + reservation.guardianRut + ' | ' + reservation.guardianEmail;
+                const elName = document.getElementById('guardian-name');
+                if (elName) elName.innerText = reservation.guardianName;
+
+                const elRutEmail = document.getElementById('guardian-rut-email');
+                if (elRutEmail) elRutEmail.innerText = 'RUT: ' + reservation.guardianRut + ' | ' + reservation.guardianEmail;
                 
                 const formattedDate = reservation.startTime ? new Date(reservation.startTime).toLocaleString('es-CL', { timeZone: 'America/Santiago' }) : 'N/A';
-                document.getElementById('reservation-time').innerText = formattedDate + ' hrs';
-                document.getElementById('reservation-duration').innerText = 'Duración: ' + reservation.durationMinutes + ' minutos';
+                const elTime = document.getElementById('reservation-time');
+                if (elTime) elTime.innerText = formattedDate + ' hrs';
+
+                const elDuration = document.getElementById('reservation-duration');
+                if (elDuration) elDuration.innerText = 'Duración: ' + reservation.durationMinutes + ' minutos';
                 
                 const isExpired = reservation.isExpired;
                 const isCheckedIn = reservation.isCheckedIn;
                 
                 const badge = document.getElementById('status-badge');
-                let statusText = 'VIGENTE / PENDIENTE DE CHECK-IN';
-                let badgeColor = '#0284c7';
-                
-                if (isExpired) {
-                  statusText = 'EXPIRADA / HORARIO PASADO';
-                  badgeColor = '#dc2626';
-                } else if (isCheckedIn) {
-                  statusText = 'CHECK-IN REALIZADO';
-                  badgeColor = '#16a34a';
+                if (badge) {
+                  let statusText = 'VIGENTE / PENDIENTE DE CHECK-IN';
+                  let badgeColor = '#0284c7';
+                  
+                  if (isExpired) {
+                    statusText = 'EXPIRADA / HORARIO PASADO';
+                    badgeColor = '#dc2626';
+                  } else if (isCheckedIn) {
+                    statusText = 'CHECK-IN REALIZADO';
+                    badgeColor = '#16a34a';
+                  }
+                  badge.innerText = statusText;
+                  badge.style.backgroundColor = badgeColor;
                 }
-                
-                badge.innerText = statusText;
-                badge.style.backgroundColor = badgeColor;
 
-                document.getElementById('checkin-status').innerText = isCheckedIn ? 'Realizado / Acceso Permitido' : 'Pendiente';
-                if (isCheckedIn && reservation.checkInAt) {
-                  const checkInTime = new Date(reservation.checkInAt).toLocaleString('es-CL', { timeZone: 'America/Santiago' });
-                  document.getElementById('checkin-time').innerText = 'Ingreso: ' + checkInTime + ' hrs';
-                  document.getElementById('checkin-time').classList.remove('hidden');
-                } else {
-                  document.getElementById('checkin-time').innerText = '';
-                  document.getElementById('checkin-time').classList.add('hidden');
+                const elStatus = document.getElementById('checkin-status');
+                if (elStatus) elStatus.innerText = isCheckedIn ? 'Realizado / Acceso Permitido' : 'Pendiente';
+
+                const elCheckInTime = document.getElementById('checkin-time');
+                if (elCheckInTime) {
+                  if (isCheckedIn && reservation.checkInAt) {
+                    const checkInTime = new Date(reservation.checkInAt).toLocaleString('es-CL', { timeZone: 'America/Santiago' });
+                    elCheckInTime.innerText = 'Ingreso: ' + checkInTime + ' hrs';
+                    elCheckInTime.classList.remove('hidden');
+                  } else {
+                    elCheckInTime.innerText = '';
+                    elCheckInTime.classList.add('hidden');
+                  }
                 }
 
                 const deps = reservation.attendingDependents || [];
-                document.getElementById('dependents-label').innerText = 'Acompañantes (' + deps.length + ')';
+                const elDepsLabel = document.getElementById('dependents-label');
+                if (elDepsLabel) elDepsLabel.innerText = 'Acompañantes (' + deps.length + ')';
+
                 const container = document.getElementById('dependents-list-container');
-                if (deps.length > 0) {
-                  let html = '<ul>';
-                  deps.forEach(function(d) {
-                    html += '<li><strong>' + d.name + '</strong> (' + d.rut + ')</li>';
-                  });
-                  html += '</ul>';
-                  container.innerHTML = html;
-                } else {
-                  container.innerHTML = '<div class="value" style="font-style: italic; color: #64748b;">Sin acompañantes</div>';
+                if (container) {
+                  if (deps.length > 0) {
+                    let html = '<ul>';
+                    deps.forEach(function(d) {
+                      html += '<li><strong>' + d.name + '</strong> (' + d.rut + ')</li>';
+                    });
+                    html += '</ul>';
+                    container.innerHTML = html;
+                  } else {
+                    container.innerHTML = '<div class="value" style="font-style: italic; color: #64748b;">Sin acompañantes</div>';
+                  }
                 }
 
                 const actionContainer = document.getElementById('action-container');
-                if (isCheckedIn) {
-                  const checkInTime = new Date(reservation.checkInAt).toLocaleString('es-CL', { timeZone: 'America/Santiago' });
-                  actionContainer.innerHTML = '<div class="already-msg">Check-in realizado el ' + checkInTime + '</div>';
-                } else if (isExpired) {
-                  actionContainer.innerHTML = '<div style="text-align: center; color: #dc2626; font-weight: bold; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 8px;">Reserva Expirada - No es posible realizar Check-In</div>';
-                } else {
-                  actionContainer.innerHTML = '<div class="pin-form" style="border: none; padding: 0;"><button id="submit-btn" class="submit-btn" onclick="submitCheckIn(\'' + pin + '\')">Autorizar Entrada</button></div>';
+                if (actionContainer) {
+                  if (isCheckedIn) {
+                    const checkInTime = new Date(reservation.checkInAt).toLocaleString('es-CL', { timeZone: 'America/Santiago' });
+                    actionContainer.innerHTML = '<div class="already-msg">Check-in realizado el ' + checkInTime + '</div>';
+                  } else if (isExpired) {
+                    actionContainer.innerHTML = '<div style="text-align: center; color: #dc2626; font-weight: bold; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 8px;">Reserva Expirada - No es posible realizar Check-In</div>';
+                  } else {
+                    actionContainer.innerHTML = '<div class="pin-form" style="border: none; padding: 0;"><button id="submit-btn" class="submit-btn">Autorizar Entrada</button></div>';
+                    const btn = document.getElementById('submit-btn');
+                    if (btn) {
+                      btn.onclick = function() {
+                        submitCheckIn(pin);
+                      };
+                    }
+                  }
                 }
 
                 showSection('details-section');
 
               } catch (err) {
                 sessionStorage.removeItem('inspector_pin');
-                document.getElementById('error-msg-box').innerText = err.message || 'Error de autenticación';
-                document.getElementById('error-subtitle').innerText = 'El código QR podría ser inválido, o el PIN ingresado no es correcto.';
+                const elErrorMsg = document.getElementById('error-msg-box');
+                if (elErrorMsg) elErrorMsg.innerText = err.message || 'Error de autenticación';
+                const elErrorSub = document.getElementById('error-subtitle');
+                if (elErrorSub) elErrorSub.innerText = 'El código QR podría ser inválido, o el PIN ingresado no es correcto.';
                 showSection('error-section');
               }
             }
 
             async function submitCheckIn(pin) {
               const btn = document.getElementById('submit-btn');
-              btn.disabled = true;
-              btn.innerText = 'Procesando...';
+              if (btn) {
+                btn.disabled = true;
+                btn.innerText = 'Procesando...';
+              }
               try {
                 const res = await fetch('/reservations/' + reservationId + '/check-in', {
                   method: 'POST',
@@ -849,14 +862,59 @@ export class ReservationsService {
                   fetchDetails(pin);
                 } else {
                   alert(data.message || 'Error al realizar check-in.');
-                  btn.disabled = false;
-                  btn.innerText = 'Autorizar Entrada';
+                  if (btn) {
+                    btn.disabled = false;
+                    btn.innerText = 'Autorizar Entrada';
+                  }
                 }
               } catch (err) {
                 alert('Error de red al conectar con el servidor.');
-                btn.disabled = false;
-                btn.innerText = 'Autorizar Entrada';
+                if (btn) {
+                  btn.disabled = false;
+                  btn.innerText = 'Autorizar Entrada';
+                }
               }
+            }
+
+            function resetView() {
+              sessionStorage.removeItem('inspector_pin');
+              const elPinInput = document.getElementById('pin-input');
+              if (elPinInput) elPinInput.value = '';
+              showSection('pin-section');
+            }
+
+            function unlockDetails() {
+              const elPinInput = document.getElementById('pin-input');
+              const pin = elPinInput ? elPinInput.value : '';
+              if (!pin) {
+                alert('Por favor ingrese el PIN.');
+                return;
+              }
+              fetchDetails(pin);
+            }
+
+            function init() {
+              if (!reservationId) {
+                const elErrorMsg = document.getElementById('error-msg-box');
+                if (elErrorMsg) elErrorMsg.innerText = 'ID de Reserva inválido o no suministrado.';
+                const elErrorSub = document.getElementById('error-subtitle');
+                if (elErrorSub) elErrorSub.innerText = 'El código QR podría estar dañado o mal formado.';
+                showSection('error-section');
+                return;
+              }
+              const storedPin = sessionStorage.getItem('inspector_pin');
+              if (storedPin) {
+                fetchDetails(storedPin);
+              } else {
+                showSection('pin-section');
+              }
+            }
+
+            // Asegura que la inicialización ocurra sólo cuando el DOM esté listo
+            if (document.readyState === 'complete' || document.readyState === 'interactive') {
+              init();
+            } else {
+              document.addEventListener('DOMContentLoaded', init);
             }
           </script>
         </body>
