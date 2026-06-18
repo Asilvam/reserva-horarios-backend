@@ -711,6 +711,7 @@ export class ReservationsService {
           </div>
 
           <script>
+            let justCheckedIn = false;
             // Extraer ID de reserva de forma robusta por strings
             const path = window.location.pathname;
             const prefix = '/reservations/';
@@ -786,8 +787,13 @@ export class ReservationsService {
                     statusText = 'EXPIRADA / HORARIO PASADO';
                     badgeColor = '#dc2626';
                   } else if (isCheckedIn) {
-                    statusText = 'CHECK-IN REALIZADO';
-                    badgeColor = '#16a34a';
+                    if (justCheckedIn) {
+                      statusText = 'CHECK-IN REALIZADO';
+                      badgeColor = '#16a34a';
+                    } else {
+                      statusText = 'CHECK-IN REALIZADO PREVIAMENTE';
+                      badgeColor = '#dc2626';
+                    }
                   }
                   badge.innerText = statusText;
                   badge.style.backgroundColor = badgeColor;
@@ -829,8 +835,32 @@ export class ReservationsService {
                 const actionContainer = document.getElementById('action-container');
                 if (actionContainer) {
                   if (isCheckedIn) {
-                    const checkInTime = new Date(reservation.checkInAt).toLocaleString('es-CL', { timeZone: 'America/Santiago' });
-                    actionContainer.innerHTML = '<div class="already-msg">Check-in realizado el ' + checkInTime + '</div>';
+                    const checkInTime = new Date(reservation.checkInAt).toLocaleString('es-CL', {
+                      timeZone: 'America/Santiago',
+                      day: '2-digit',
+                      month: '2-digit',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit'
+                    });
+                    if (justCheckedIn) {
+                      actionContainer.innerHTML = \`
+                        <div class="already-msg" style="background-color: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 18px; border-radius: 10px; text-align: center; margin-top: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                          <div style="font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; color: #15803d;">¡Check-in Registrado Ahora!</div>
+                          <div style="font-size: 22px; font-weight: 800; color: #166534; margin: 4px 0; font-family: monospace;">\${checkInTime}</div>
+                          <div style="font-size: 13px; color: #14532d; font-weight: 500;">Entrada autorizada exitosamente.</div>
+                        </div>
+                      \`;
+                    } else {
+                      actionContainer.innerHTML = \`
+                        <div class="already-msg" style="background-color: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 18px; border-radius: 10px; text-align: center; margin-top: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                          <div style="font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; color: #b91c1c;">Check-In Realizado Anteriormente</div>
+                          <div style="font-size: 22px; font-weight: 800; color: #b91c1c; margin: 4px 0; font-family: monospace;">\${checkInTime}</div>
+                          <div style="font-size: 13px; color: #7f1d1d; font-weight: 600; margin-top: 8px;">⚠️ ALERTA: Esta entrada ya fue utilizada.</div>
+                        </div>
+                      \`;
+                    }
                   } else if (isExpired) {
                     actionContainer.innerHTML = '<div style="text-align: center; color: #dc2626; font-weight: bold; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 8px;">Reserva Expirada - No es posible realizar Check-In</div>';
                   } else {
@@ -872,6 +902,7 @@ export class ReservationsService {
                 });
                 const data = await res.json();
                 if (res.ok && data.success) {
+                  justCheckedIn = true;
                   alert(data.message);
                   fetchDetails(pin);
                 } else {
