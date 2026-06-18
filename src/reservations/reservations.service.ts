@@ -365,7 +365,7 @@ export class ReservationsService {
         'expire-reservation',
         { reservationId: finalReservation._id.toString() },
         { 
-          delay: 3 * 60 * 1000, // 30 minutos (1800000 ms)
+          delay: 5 * 60 * 1000, // 30 minutos (1800000 ms)
           attempts: 3,           // Intentar hasta 3 veces si falla por WriteConflict
           backoff: {
             type: 'exponential',
