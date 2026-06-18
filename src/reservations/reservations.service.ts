@@ -712,6 +712,24 @@ export class ReservationsService {
 
           <script>
             let justCheckedIn = false;
+            
+            function format24h(dateVal, includeSeconds) {
+              if (!dateVal) return 'N/A';
+              const options = {
+                timeZone: 'America/Santiago',
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+              };
+              if (includeSeconds) {
+                options.second = '2-digit';
+              }
+              return new Intl.DateTimeFormat('es-CL', options).format(new Date(dateVal)).replace(',', '');
+            }
+
             // Extraer ID de reserva de forma robusta por strings
             const path = window.location.pathname;
             const prefix = '/reservations/';
@@ -768,7 +786,7 @@ export class ReservationsService {
                 const elRutEmail = document.getElementById('guardian-rut-email');
                 if (elRutEmail) elRutEmail.innerText = 'RUT: ' + reservation.guardianRut + ' | ' + reservation.guardianEmail;
                 
-                const formattedDate = reservation.startTime ? new Date(reservation.startTime).toLocaleString('es-CL', { timeZone: 'America/Santiago' }) : 'N/A';
+                const formattedDate = format24h(reservation.startTime, false);
                 const elTime = document.getElementById('reservation-time');
                 if (elTime) elTime.innerText = formattedDate + ' hrs';
 
@@ -805,7 +823,7 @@ export class ReservationsService {
                 const elCheckInTime = document.getElementById('checkin-time');
                 if (elCheckInTime) {
                   if (isCheckedIn && reservation.checkInAt) {
-                    const checkInTime = new Date(reservation.checkInAt).toLocaleString('es-CL', { timeZone: 'America/Santiago' });
+                    const checkInTime = format24h(reservation.checkInAt, false);
                     elCheckInTime.innerText = 'Ingreso: ' + checkInTime + ' hrs';
                     elCheckInTime.classList.remove('hidden');
                   } else {
@@ -835,21 +853,12 @@ export class ReservationsService {
                 const actionContainer = document.getElementById('action-container');
                 if (actionContainer) {
                   if (isCheckedIn) {
-                    const checkInTime = new Intl.DateTimeFormat('es-CL', {
-                      timeZone: 'America/Santiago',
-                      day: '2-digit',
-                      month: '2-digit',
-                      year: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                      second: '2-digit',
-                      hour12: false
-                    }).format(new Date(reservation.checkInAt)).replace(',', '');
+                    const checkInTime = format24h(reservation.checkInAt, true);
                     if (justCheckedIn) {
                       actionContainer.innerHTML = \`
                         <div class="already-msg" style="background-color: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 18px; border-radius: 10px; text-align: center; margin-top: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                           <div style="font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; color: #15803d;">¡Check-in Registrado Ahora!</div>
-                          <div style="font-size: 18px; font-weight: 800; color: #166534; margin: 6px 0; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">\\\${checkInTime}</div>
+                          <div style="font-size: 18px; font-weight: 800; color: #166534; margin: 6px 0; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">\${checkInTime}</div>
                           <div style="font-size: 13px; color: #14532d; font-weight: 500;">Entrada autorizada exitosamente.</div>
                         </div>
                       \`;
@@ -857,7 +866,7 @@ export class ReservationsService {
                       actionContainer.innerHTML = \`
                         <div class="already-msg" style="background-color: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 18px; border-radius: 10px; text-align: center; margin-top: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                           <div style="font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; color: #b91c1c;">Check-In Realizado Anteriormente</div>
-                          <div style="font-size: 18px; font-weight: 800; color: #b91c1c; margin: 6px 0; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">\\\${checkInTime}</div>
+                          <div style="font-size: 18px; font-weight: 800; color: #b91c1c; margin: 6px 0; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">\${checkInTime}</div>
                           <div style="font-size: 13px; color: #7f1d1d; font-weight: 600; margin-top: 8px;">⚠️ ALERTA: Esta entrada ya fue utilizada.</div>
                         </div>
                       \`;
