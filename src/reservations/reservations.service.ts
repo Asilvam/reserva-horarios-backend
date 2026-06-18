@@ -94,6 +94,28 @@ export class ReservationsService {
       throw new ConflictException('La persona ya tiene una reserva para ese dia.');
     }
 
+    // Validar si alguno de los acompañantes ya tiene una reserva activa para ese mismo día y evento
+    const attendingRuts = dto.attendingDependents?.map((d) => d.rut) || [];
+    if (attendingRuts.length > 0) {
+      const duplicateDependentReservation = await this.reservationModel.findOne({
+        reservationDay: {
+          $gte: reservationDay,
+          $lt: nextReservationDay,
+        },
+        eventType: schedule.eventType,
+        state_reserve: true,
+        'attendingDependents.rut': { $in: attendingRuts },
+      });
+
+      if (duplicateDependentReservation) {
+        const duplicateRut = duplicateDependentReservation.attendingDependents
+          .map((d) => d.rut)
+          .find((rut) => attendingRuts.includes(rut));
+        this.logger.warn(`Conflicto al encolar: El acompañante con RUT ${duplicateRut} ya tiene reserva para el dia.`);
+        throw new ConflictException(`El acompañante con RUT ${duplicateRut} ya tiene una reserva para ese dia.`);
+      }
+    }
+
     const jobName = 'process-single-reservation';
 
     const job = await this.reservationQueue.add(
@@ -162,12 +184,8 @@ export class ReservationsService {
       throw new BadRequestException('No se permiten RUTs duplicados en asistentes.');
     }
 
-    const guardianDependentRuts = new Set(guardian.dependents.map((dependent) => dependent.rut));
-    const invalidAttendingRut = attendingRuts.find((rut) => !guardianDependentRuts.has(rut));
-    if (invalidAttendingRut) {
-      this.logger.warn(`Asistente invalido (${invalidAttendingRut}) en reserva para guardianId=${guardianId}.`);
-      throw new BadRequestException('Todos los asistentes deben pertenecer al apoderado.');
-    }
+    // Ya no se requiere validar que los acompañantes pertenezcan rígidamente al apoderado.
+    // Esta validación restrictiva ha sido removida para flexibilizar grupos familiares.
 
     if (attendingDependentsCount > schedule.maxDependentsPerReservation) {
       this.logger.warn(`Exceso de cargas para guardianId=${guardianId} en scheduleId=${dto.scheduleId}.`);
@@ -253,6 +271,29 @@ export class ReservationsService {
           throw new ConflictException('La persona ya tiene una reserva para ese dia.');
         }
 
+        // Validar en la transacción que ningún acompañante ya tenga una reserva activa el mismo día y evento
+        if (attendingRuts.length > 0) {
+          const duplicateDependentReservation = await this.reservationModel
+            .findOne({
+              reservationDay: {
+                $gte: reservationDay,
+                $lt: nextReservationDay,
+              },
+              eventType: scheduleInTx.eventType,
+              state_reserve: true,
+              'attendingDependents.rut': { $in: attendingRuts },
+            })
+            .session(session);
+
+          if (duplicateDependentReservation) {
+            const duplicateRut = duplicateDependentReservation.attendingDependents
+              .map((d) => d.rut)
+              .find((rut) => attendingRuts.includes(rut));
+            this.logger.warn(`Conflicto: El acompañante con RUT ${duplicateRut} ya tiene reserva para el dia.`);
+            throw new ConflictException(`El acompañante con RUT ${duplicateRut} ya tiene una reserva para ese dia.`);
+          }
+        }
+
         const updatedScheduleInTx = await this.scheduleModel.findOneAndUpdate(
           {
             _id: dto.scheduleId,
@@ -324,7 +365,7 @@ export class ReservationsService {
   private async sendReservationConfirmationNotifications(
     guardian: { name: string; email: string; phone: string },
     startTime: Date,
-    attendingDependents: Array<{ name: string; rut: string }>,
+    attendingDependents: Array<{ name: string; rut: string; age?: number }>,
     reservationId: string,
   ) {
     const scheduleDateTime = this.formatDateTime(startTime);
@@ -553,5 +594,83 @@ export class ReservationsService {
       width: 400,
       margin: 1,
     });
+  }
+
+  async confirmEmail(id: string): Promise<Reservation> {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Id de reserva inválido');
+    }
+
+    const reservation = await this.reservationModel.findById(id).exec();
+    if (!reservation) {
+      throw new NotFoundException('Reserva no encontrada');
+    }
+
+    if (!reservation.state_reserve) {
+      throw new BadRequestException('Esta reserva ya no está activa.');
+    }
+
+    reservation.checkMail = true;
+    reservation.checkMailDate = new Date();
+    return await reservation.save();
+  }
+
+  async cancelEmail(id: string): Promise<Reservation> {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Id de reserva inválido');
+    }
+
+    const session = await this.reservationModel.db.startSession();
+    let updatedScheduleAfterCancel: any = null;
+    let cancelledReservation: any = null;
+
+    try {
+      await session.withTransaction(async () => {
+        const reservation = await this.reservationModel.findById(id).session(session);
+
+        if (!reservation) {
+          throw new NotFoundException('Reserva no encontrada');
+        }
+
+        if (!reservation.state_reserve) {
+          throw new BadRequestException('Esta reserva ya fue cancelada.');
+        }
+
+        // Marcar la reserva como inactiva y registrar la cancelación por correo
+        reservation.state_reserve = false;
+        reservation.checkMail = false;
+        reservation.checkMailDate = new Date();
+        cancelledReservation = await reservation.save({ session });
+
+        // Devolver los cupos al schedule correspondiente
+        const updatedSchedule = await this.scheduleModel.findByIdAndUpdate(
+          reservation.scheduleId,
+          {
+            $inc: { availableSpots: reservation.totalSpotsConsumed },
+          },
+          {
+            returnDocument: 'after',
+            session,
+          },
+        );
+        updatedScheduleAfterCancel = updatedSchedule;
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    if (updatedScheduleAfterCancel && cancelledReservation) {
+      this.logger.log(`Cupos restaurados tras cancelación por email de la reserva ${id}. Nuevos disponibles: ${updatedScheduleAfterCancel.availableSpots}`);
+      this.schedulesGateway.broadcastSpotsUpdate(
+        cancelledReservation.scheduleId.toString(),
+        updatedScheduleAfterCancel.availableSpots
+      );
+    }
+
+    if (!cancelledReservation) {
+      throw new InternalServerErrorException('No se pudo cancelar la reserva.');
+    }
+
+    return cancelledReservation;
   }
 }

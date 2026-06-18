@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsArray, IsBoolean, IsMongoId, IsObject, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsMongoId, IsNumber, IsObject, IsOptional, IsString, ValidateNested } from 'class-validator';
 
 export class AttendingDependentDto {
   @IsString()
@@ -7,6 +7,10 @@ export class AttendingDependentDto {
 
   @IsString()
   rut: string;
+
+  @IsOptional()
+  @IsNumber()
+  age?: number;
 }
 
 export class CreateReservationDto {

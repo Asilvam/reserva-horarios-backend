@@ -1,16 +1,4 @@
-import { IsString, IsEmail, IsArray, ValidateNested, IsOptional, IsNumber, IsBoolean } from 'class-validator';
-import { Type } from 'class-transformer';
-
-class DependentDto {
-  @IsString()
-  name: string;
-
-  @IsString()
-  rut: string;
-
-  @IsNumber()
-  age: number;
-}
+import { IsString, IsEmail, IsOptional, IsBoolean } from 'class-validator';
 
 export class CreateGuardianDto {
   @IsString()
@@ -44,12 +32,6 @@ export class CreateGuardianDto {
   @IsString()
   @IsOptional()
   emergencyPhone?: string;
-
-  @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => DependentDto)
-  @IsOptional()
-  dependents?: DependentDto[];
 
   @IsBoolean()
   @IsOptional()

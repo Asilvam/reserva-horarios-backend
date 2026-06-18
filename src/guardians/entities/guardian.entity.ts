@@ -1,20 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
 
-@Schema()
-export class Dependent {
-  @Prop({ required: true })
-  name: string;
-
-  @Prop({ required: true })
-  rut: string;
-
-  @Prop({ required: true })
-  age: number;
-}
-
-export const DependentSchema = SchemaFactory.createForClass(Dependent);
-
 @Schema({ timestamps: true })
 export class Guardian extends Document {
   @Prop({ required: true })
@@ -43,9 +29,6 @@ export class Guardian extends Document {
 
   @Prop({ required: false })
   emergencyPhone?: string;
-
-  @Prop({ type: [DependentSchema], default: [] })
-  dependents: Dependent[];
 
   @Prop({ required: false, default: false })
   acceptMarketing?: boolean;

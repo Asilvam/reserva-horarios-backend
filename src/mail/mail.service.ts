@@ -104,7 +104,7 @@ export class MailService {
     });
   }
 
-  async sendReservationConfirmation(email: string, guardianName: string, scheduleDateTime: string, companions: Array<{ name: string; rut: string }>, reservationId: string) {
+  async sendReservationConfirmation(email: string, guardianName: string, scheduleDateTime: string, companions: Array<{ name: string; rut: string; age?: number }>, reservationId: string) {
     const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
     const transporter = this.createTransport();
 
@@ -138,6 +138,23 @@ export class MailService {
       <p><strong>Acompañantes registrados:</strong></p>
       <ul>${companionsHtml || '<li>Sin acompañantes</li>'}</ul>
       <br/>
+      
+      <!-- Botones de Confirmación de Asistencia -->
+      <div style="text-align: center; margin: 25px 0; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; background-color: #f8fafc;">
+        <h4 style="margin-top: 0; color: #0f766e; font-size: 16px;">¿Confirmas tu asistencia para este día?</h4>
+        <p style="font-size: 13px; color: #64748b; margin-bottom: 15px;">Por favor, indícanos si asistirás para ayudarnos a gestionar el aforo:</p>
+        <div style="margin-top: 15px;">
+          <a href="${baseUrl}/reservations/${reservationId}/confirm-email" 
+             style="display: inline-block; padding: 12px 24px; background-color: #10b981; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 14px; margin-right: 10px;">
+             Sí, Confirmar Asistencia
+          </a>
+          <a href="${baseUrl}/reservations/${reservationId}/cancel-email" 
+             style="display: inline-block; padding: 12px 24px; background-color: #ef4444; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 14px;">
+             No podré asistir
+          </a>
+        </div>
+      </div>
+
       <div style="text-align: center; margin-top: 20px; padding: 20px; border: 1px dashed #cccccc; border-radius: 8px; background-color: #fafafa;">
         <h3 style="margin-top: 0; color: #007BFF;">Pase de Entrada (Código QR)</h3>
         <p style="font-size: 13px; color: #555555; margin-bottom: 15px;">Presenta este código en la entrada para realizar tu Check-In:</p>

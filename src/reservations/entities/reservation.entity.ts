@@ -8,6 +8,9 @@ export class AttendingDependent {
 
   @Prop({ required: true })
   rut: string;
+
+  @Prop({ required: false })
+  age?: number;
 }
 
 export const AttendingDependentSchema = SchemaFactory.createForClass(AttendingDependent);
@@ -46,6 +49,18 @@ export class Reservation extends Document {
 
   @Prop({ required: false })
   eventType?: string;
+
+  @Prop({ required: false, default: null })
+  checkMail?: boolean;
+
+  @Prop({ required: false })
+  checkMailDate?: Date;
+
+  @Prop({ required: false, default: null })
+  checkWsp?: boolean;
+
+  @Prop({ required: false })
+  checkWspDate?: Date;
 }
 
 export const ReservationSchema = SchemaFactory.createForClass(Reservation);

@@ -255,9 +255,159 @@ export class ReservationsController {
               </div>
               <div class="content">
                 <div class="error-msg">
-                  \${errMsg}
+                  ${errMsg}
                 </div>
                 <p style="color: #64748b; font-size: 14px;">El código QR escaneado podría ser inválido o haber expirado.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+    }
+  }
+
+  @Get(':id/confirm-email')
+  @Header('Content-Type', 'text/html')
+  async confirmEmail(@Param('id') id: string) {
+    try {
+      const reservation = await this.reservationsService.confirmEmail(id);
+      const formattedDate = reservation.reservationDay
+        ? new Date(reservation.reservationDay).toLocaleDateString('es-CL', { timeZone: 'America/Santiago', day: 'numeric', month: 'long', year: 'numeric' })
+        : 'N/A';
+
+      return `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Asistencia Confirmada</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+              .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+              .header { background: #10b981; color: white; padding: 24px; }
+              .header h1 { margin: 0; font-size: 22px; }
+              .content { padding: 30px; }
+              .icon { font-size: 48px; color: #10b981; margin-bottom: 16px; }
+              .info { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 20px 0; font-size: 15px; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="header">
+                <h1>¡Asistencia Confirmada!</h1>
+              </div>
+              <div class="content">
+                <div class="icon">✓</div>
+                <p style="font-size: 16px; line-height: 1.5; color: #334155;">Muchas gracias. Hemos registrado la confirmación de tu asistencia para la reserva.</p>
+                <div class="info">
+                  <strong>Fecha de Reserva:</strong><br/>
+                  ${formattedDate}
+                </div>
+                <p style="font-size: 13px; color: #64748b;">Te sugerimos llegar con 20 minutos de anticipación al recinto.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+    } catch (error: any) {
+      return `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Error al Confirmar</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+              .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+              .header { background: #dc2626; color: white; padding: 24px; }
+              .header h1 { margin: 0; font-size: 22px; }
+              .content { padding: 30px; }
+              .error-box { background-color: #fef2f2; border: 1px solid #fecaca; color: #991b1b; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="header">
+                <h1>Error</h1>
+              </div>
+              <div class="content">
+                <div class="error-box">
+                  ${error.message || 'No se pudo procesar la confirmación. Por favor, intenta de nuevo o comunícate con soporte.'}
+                </div>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+    }
+  }
+
+  @Get(':id/cancel-email')
+  @Header('Content-Type', 'text/html')
+  async cancelEmail(@Param('id') id: string) {
+    try {
+      await this.reservationsService.cancelEmail(id);
+      return `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Reserva Cancelada</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+              .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+              .header { background: #ef4444; color: white; padding: 24px; }
+              .header h1 { margin: 0; font-size: 22px; }
+              .content { padding: 30px; }
+              .icon { font-size: 48px; color: #ef4444; margin-bottom: 16px; }
+              .info { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 20px 0; font-size: 15px; color: #475569; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="header">
+                <h1>Reserva Cancelada</h1>
+              </div>
+              <div class="content">
+                <div class="icon">✓</div>
+                <p style="font-size: 16px; line-height: 1.5; color: #334155;">Tu reserva ha sido cancelada exitosamente y los cupos han sido liberados.</p>
+                <div class="info">
+                  Hemos actualizado el sistema para notificar al equipo que no asistirás. Puedes realizar una nueva reserva en nuestro sitio web cuando lo desees.
+                </div>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+    } catch (error: any) {
+      return `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Error al Cancelar</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+              .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+              .header { background: #dc2626; color: white; padding: 24px; }
+              .header h1 { margin: 0; font-size: 22px; }
+              .content { padding: 30px; }
+              .error-box { background-color: #fef2f2; border: 1px solid #fecaca; color: #991b1b; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="header">
+                <h1>Error</h1>
+              </div>
+              <div class="content">
+                <div class="error-box">
+                  ${error.message || 'No se pudo procesar la cancelación. Por favor, intenta de nuevo o comunícate con soporte.'}
+                </div>
               </div>
             </div>
           </body>
