@@ -11,9 +11,13 @@ export class ReservationProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<ReservationQueuePayload, unknown, 'process-single-reservation'>): Promise<unknown> {
-    this.logger.log(`Procesando job ${job.id} para guardianId=${job.data.dto.guardianId}`);
+  async process(job: Job<any>): Promise<unknown> {
+    if (job.name === 'expire-reservation') {
+      this.logger.log(`Procesando expiración automática para la reserva: ${job.data.reservationId}`);
+      return this.reservationsService.expireReservation(job.data.reservationId);
+    }
 
+    this.logger.log(`Procesando job ${job.id} para guardianId=${job.data.dto.guardianId}`);
     return this.reservationsService.createReservation(job.data.dto, job.data.authUser);
   }
 

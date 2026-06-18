@@ -359,6 +359,25 @@ export class ReservationsService {
     this.logger.log(`Reserva creada exitosamente: reservationId=${finalReservation._id}`);
     await this.sendReservationConfirmationNotifications(guardian, finalReservationStartTime, dto.attendingDependents, finalReservation._id.toString());
 
+    // Programar la expiración automática en 30 minutos con reintentos para alta concurrencia
+    try {
+      await this.reservationQueue.add(
+        'expire-reservation',
+        { reservationId: finalReservation._id.toString() },
+        { 
+          delay: 30 * 60 * 1000, // 30 minutos (1800000 ms)
+          attempts: 3,           // Intentar hasta 3 veces si falla por WriteConflict
+          backoff: {
+            type: 'exponential',
+            delay: 5000,         // Reintentar tras 5s, luego 10s, etc.
+          },
+        }
+      );
+      this.logger.log(`Job de expiración programado para la reserva: ${finalReservation._id}`);
+    } catch (queueErr) {
+      this.logger.error(`Error al programar la expiración de la reserva ${finalReservation._id}: ${queueErr instanceof Error ? queueErr.message : String(queueErr)}`);
+    }
+
     return finalReservation;
   }
 
@@ -684,5 +703,71 @@ export class ReservationsService {
     }
 
     return cancelledReservation;
+  }
+
+  async expireReservation(id: string): Promise<void> {
+    if (!Types.ObjectId.isValid(id)) {
+      this.logger.warn(`Id de reserva inválido para expiración: ${id}`);
+      return;
+    }
+
+    const session = await this.reservationModel.db.startSession();
+    let updatedScheduleAfterExpiry: any = null;
+    let expiredReservation: any = null;
+
+    try {
+      await session.withTransaction(async () => {
+        const reservation = await this.reservationModel.findById(id).session(session);
+
+        if (!reservation) {
+          this.logger.warn(`Intento de expiración: Reserva ${id} no encontrada.`);
+          return;
+        }
+
+        // Si ya fue confirmada (por correo o Whatsapp), no hacemos nada y cancelamos expiración
+        if (reservation.checkMail === true || reservation.checkWsp === true) {
+          this.logger.log(`Reserva ${id} ya confirmada anteriormente por correo o Whatsapp. Omitiendo expiración.`);
+          return;
+        }
+
+        // Si la reserva ya fue cancelada/inactivada por otra razón, no hacemos nada
+        if (!reservation.state_reserve) {
+          this.logger.log(`Reserva ${id} ya está inactiva. Omitiendo expiración.`);
+          return;
+        }
+
+        // Expirar la reserva: setear state_reserve = false
+        reservation.state_reserve = false;
+        // Marcamos checkMail como false para registrar que quedó cancelada/expirada por tiempo
+        reservation.checkMail = false;
+        reservation.checkMailDate = new Date();
+        expiredReservation = await reservation.save({ session });
+
+        // Devolver los cupos al schedule correspondiente
+        const updatedSchedule = await this.scheduleModel.findByIdAndUpdate(
+          reservation.scheduleId,
+          {
+            $inc: { availableSpots: reservation.totalSpotsConsumed },
+          },
+          {
+            returnDocument: 'after',
+            session,
+          },
+        );
+        updatedScheduleAfterExpiry = updatedSchedule;
+      });
+    } catch (err) {
+      this.logger.error(`Error al procesar la expiración automática de la reserva ${id}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      await session.endSession();
+    }
+
+    if (updatedScheduleAfterExpiry && expiredReservation) {
+      this.logger.log(`Reserva ${id} EXPIRADA automáticamente por falta de confirmación en 30 minutos. Cupos devueltos al scheduleId=${expiredReservation.scheduleId}. Disponibles: ${updatedScheduleAfterExpiry.availableSpots}`);
+      this.schedulesGateway.broadcastSpotsUpdate(
+        expiredReservation.scheduleId.toString(),
+        updatedScheduleAfterExpiry.availableSpots
+      );
+    }
   }
 }
