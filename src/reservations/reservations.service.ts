@@ -1011,7 +1011,7 @@ export class ReservationsService {
                 <p style="font-size: 16px; line-height: 1.5; color: #334155;">Muchas gracias. Hemos registrado la confirmación de tu asistencia para la reserva.</p>
                 <div class="info">
                   <strong>Fecha de Reserva:</strong><br/>
-                  \${formattedDate}
+                  ${formattedDate}
                 </div>
                 <p style="font-size: 13px; color: #64748b;">Te sugerimos llegar con 20 minutos de anticipación al recinto.</p>
               </div>
@@ -1048,7 +1048,7 @@ export class ReservationsService {
                   <p style="font-size: 16px; line-height: 1.5; color: #334155;">Esta invitación ya ha sido respondida previamente.</p>
                   <div class="warning-box">
                     <strong>Detalle:</strong><br/>
-                    \${error.message}
+                    ${error.message}
                   </div>
                   <p style="font-size: 13px; color: #64748b; margin-top: 15px;">No se permiten más cambios de estado desde el correo electrónico. Si tienes dudas o necesitas modificar tu respuesta, comunícate con soporte.</p>
                 </div>
@@ -1081,7 +1081,7 @@ export class ReservationsService {
               </div>
               <div class="content">
                 <div class="error-box">
-                  \${error.message || 'No se pudo procesar la confirmación. Por favor, intenta de nuevo o comunícate con soporte.'}
+                  ${error.message || 'No se pudo procesar la confirmación. Por favor, intenta de nuevo o comunícate con soporte.'}
                 </div>
               </div>
             </div>
@@ -1156,7 +1156,7 @@ export class ReservationsService {
                   <p style="font-size: 16px; line-height: 1.5; color: #334155;">Esta invitación ya ha sido respondida previamente.</p>
                   <div class="warning-box">
                     <strong>Detalle:</strong><br/>
-                    \${error.message}
+                    ${error.message}
                   </div>
                   <p style="font-size: 13px; color: #64748b; margin-top: 15px;">No se permiten más cambios de estado desde el correo electrónico. Si tienes dudas o necesitas modificar tu respuesta, comunícate con soporte.</p>
                 </div>
@@ -1189,7 +1189,7 @@ export class ReservationsService {
               </div>
               <div class="content">
                 <div class="error-box">
-                  \${error.message || 'No se pudo procesar la cancelación. Por favor, intenta de nuevo o comunícate con soporte.'}
+                  ${error.message || 'No se pudo procesar la cancelación. Por favor, intenta de nuevo o comunícate con soporte.'}
                 </div>
               </div>
             </div>
