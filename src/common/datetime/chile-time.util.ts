@@ -68,9 +68,20 @@ export function getChileStartOfDayUtc(date: Date): Date {
 }
 
 export function getChileDateTimeLabel(date: Date): string {
-  return new Intl.DateTimeFormat('es-CL', {
+  const dateFormatter = new Intl.DateTimeFormat('es-CL', {
     timeZone: CHILE_TIME_ZONE,
     dateStyle: 'full',
-    timeStyle: 'short',
-  }).format(date);
+  });
+
+  const timeFormatter = new Intl.DateTimeFormat('es-CL', {
+    timeZone: CHILE_TIME_ZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+
+  const dateLabel = dateFormatter.format(date);
+  const capitalizedDateLabel = dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1);
+
+  return `${capitalizedDateLabel} - ${timeFormatter.format(date)}`;
 }

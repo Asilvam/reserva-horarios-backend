@@ -7,6 +7,7 @@ import { Schedule } from '../schedules/entities/schedule.entity';
 import * as QRCode from 'qrcode';
 import { Injectable, BadRequestException, ConflictException, NotFoundException, ForbiddenException, InternalServerErrorException, Logger } from '@nestjs/common';
 import { GuardiansService } from '../guardians/guardians.service';
+import { ConfigService } from '@nestjs/config';
 import { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { Role } from '../auth/enums/role.enum';
 import { MailService } from '../mail/mail.service';
@@ -33,6 +34,7 @@ export class ReservationsService {
     private mailService: MailService,
     private wspMetaService: WspMetaService,
     private schedulesGateway: SchedulesGateway,
+    private configService: ConfigService,
   ) {}
 
   async enqueueReservation(dto: CreateReservationDto, authUser?: AuthUser): Promise<{ success: boolean; message: string; jobId: string | undefined }> {
@@ -357,7 +359,7 @@ export class ReservationsService {
     this.schedulesGateway.broadcastSpotsUpdate(finalSchedule._id.toString(), finalSchedule.availableSpots);
 
     this.logger.log(`Reserva creada exitosamente: reservationId=${finalReservation._id}`);
-    await this.sendReservationConfirmationNotifications(guardian, finalReservationStartTime, dto.attendingDependents, finalReservation._id.toString());
+    await this.sendReservationConfirmationNotifications(guardian, finalReservationStartTime, dto.attendingDependents, finalReservation._id.toString(), finalReservation.eventType);
 
     // Programar la expiración automática en 30 minutos con reintentos para alta concurrencia
     try {
@@ -382,28 +384,62 @@ export class ReservationsService {
   }
 
   private async sendReservationConfirmationNotifications(
-    guardian: { name: string; email: string; phone: string },
+    guardian: { name: string; email: string; phone: string; rut: string },
     startTime: Date,
     attendingDependents: Array<{ name: string; rut: string; age?: number }>,
     reservationId: string,
+    eventType?: string,
   ) {
     const scheduleDateTime = this.formatDateTime(startTime);
-    const companionsLine = attendingDependents.length > 0 ? attendingDependents.map((dependent) => `${dependent.name} (${dependent.rut})`).join(', ') : 'Sin acompanantes';
+    const baseUrl = this.configService.get<string>('BACKEND_URL') || 'http://localhost:3500';
+
+    // 1. Integrantes del Correo (Apoderado al inicio)
+    const mailCompanions = [
+      {
+        name: guardian.name,
+        rut: guardian.rut,
+      },
+      ...attendingDependents,
+    ];
 
     try {
       await this.mailService.sendReservationConfirmation(
         guardian.email,
         guardian.name,
         scheduleDateTime,
-        attendingDependents,
+        mailCompanions,
         reservationId,
+        eventType,
       );
     } catch (error) {
       this.logger.error(`No se pudo enviar correo de confirmacion para guardianId=${guardian.email}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
+    // 2. Integrantes del WhatsApp (Apoderado al inicio)
+    const listItems: string[] = [
+      `- ${guardian.name} (${guardian.rut})`
+    ];
+    attendingDependents.forEach((dep) => {
+      listItems.push(`- ${dep.name} (${dep.rut})`);
+    });
+    const companionsText = listItems.join('\n');
+
     try {
-      const message = `Reserva confirmada para ${scheduleDateTime}. Acompanantes: ${companionsLine}.`;
+      let eventTitle = 'tu reserva';
+      if (eventType === 'selva') {
+        eventTitle = 'tu reserva en Selva Viva! 🦎🦜';
+      } else if (eventType === 'patines') {
+        eventTitle = 'tu reserva en la Pista de Hielo! ❄️⛸️';
+      }
+
+      const message = `¡Estás a un paso de confirmar ${eventTitle}\n\n` +
+        `Debes confirmar tu reserva dentro de los próximos 5 minutos. Si no la confirmas, los cupos se liberarán automáticamente.\n\n` +
+        `📅 *Fecha y hora:* ${scheduleDateTime} hrs.\n` +
+        `👥 *Integrantes:*\n${companionsText || '- Sin acompañantes'}\n\n` +
+        `👇 *Presiona el enlace para confirmar:*\n` +
+        `${baseUrl}/reservations/${reservationId}/confirm-email\n\n` +
+        `Una vez confirmada, recibirás el código QR de ingreso. 🎟️`;
+
       const wspMetaStatus = this.wspMetaService.getStatus();
 
       if (wspMetaStatus.enabled && wspMetaStatus.configured) {

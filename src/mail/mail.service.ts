@@ -19,11 +19,11 @@ export class MailService {
     return value.toLowerCase() === 'true';
   }
 
-  private _generateModernHtmlTemplate(title: string, content: string): string {
+  private _generateModernHtmlTemplate(title: string, content: string, headerColor = '#007BFF'): string {
     return `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; background-color: #f8f9fa; padding: 20px;">
         <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
-          <div style="background-color: #007BFF; color: #ffffff; padding: 25px; text-align: center;">
+          <div style="background-color: ${headerColor}; color: #ffffff; padding: 25px; text-align: center;">
             <h1 style="margin: 0; font-size: 24px;">${title}</h1>
           </div>
           <div style="padding: 30px; color: #343a40;">
@@ -104,7 +104,14 @@ export class MailService {
     });
   }
 
-  async sendReservationConfirmation(email: string, guardianName: string, scheduleDateTime: string, companions: Array<{ name: string; rut: string; age?: number }>, reservationId: string) {
+  async sendReservationConfirmation(
+    email: string,
+    guardianName: string,
+    scheduleDateTime: string,
+    companions: Array<{ name: string; rut: string; age?: number }>,
+    reservationId: string,
+    eventType?: string,
+  ) {
     const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
     const transporter = this.createTransport();
 
@@ -114,70 +121,92 @@ export class MailService {
     }
 
     const baseUrl = this.configService.get<string>('BACKEND_URL') || 'http://localhost:3500';
-    const checkInUrl = `${baseUrl}/reservations/${reservationId}/check-in`;
 
-    let qrBuffer: Buffer;
-    try {
-      qrBuffer = await QRCode.toBuffer(checkInUrl, {
-        type: 'png',
-        width: 250,
-        margin: 1,
-      });
-    } catch (qrErr) {
-      this.logger.error(`Error al generar codigo QR: ${qrErr instanceof Error ? qrErr.message : String(qrErr)}`);
-      return;
+    // Configuraciones dinámicas por tipo de evento
+    let subject = 'Confirma tu reserva - Reserva Horarios';
+    let headerColor = '#007BFF'; // Azul por defecto
+    let btnGradient = 'linear-gradient(135deg, #007BFF, #0056b3)'; // Gradiente azul
+    let introText = 'tu reserva en <strong>Reserva Horarios</strong>.';
+
+    if (eventType === 'selva') {
+      subject = 'Confirma tu reserva en Selva Viva 🦎🦜';
+      headerColor = '#0d9488'; // Turquesa Selva
+      btnGradient = 'linear-gradient(135deg, #10b981, #059669)'; // Verde Selva
+      introText = 'tu reserva en <strong>Selva Viva</strong>! 🦎 🦜';
+    } else if (eventType === 'patines') {
+      subject = 'Confirma tu reserva en la Pista de Hielo ❄️⛸️';
+      headerColor = '#0284c7'; // Azul Hielo
+      btnGradient = 'linear-gradient(135deg, #0ea5e9, #0284c7)'; // Celeste Pista
+      introText = 'tu reserva en la <strong>Pista de Hielo</strong>! ❄️  ⛸️';
     }
 
-    const companionsHtml = companions.map((companion) => `<li><strong>${companion.name}</strong> (${companion.rut})</li>`).join('');
+    const companionsHtml = companions
+      .map(
+        (companion) => `
+      <li style="margin-bottom: 6px; list-style-type: none; display: flex; align-items: center;">
+        <span style="margin-right: 8px;">👤</span>
+        <strong>${companion.name}</strong> ${companion.rut ? `(${companion.rut})` : ''}
+      </li>
+    `,
+      )
+      .join('');
 
     const companionsText = companions.map((companion) => `- ${companion.name} (${companion.rut})`).join('\n');
 
     const emailContent = `
-      <p>Hola <strong>${guardianName}</strong>, tu reserva fue registrada correctamente.</p>
-      <p><strong>Fecha y hora:</strong> ${scheduleDateTime}</p>
-      <p><strong>Acompañantes registrados:</strong></p>
-      <ul>${companionsHtml || '<li>Sin acompañantes</li>'}</ul>
-      <br/>
-      
-      <!-- Botones de Confirmación de Asistencia -->
-      <div style="text-align: center; margin: 25px 0; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; background-color: #f8fafc;">
-        <h4 style="margin-top: 0; color: #0f766e; font-size: 16px;">¿Confirmas tu asistencia para este día?</h4>
-        <p style="font-size: 13px; color: #64748b; margin-bottom: 15px;">Por favor, indícanos si asistirás para ayudarnos a gestionar el aforo:</p>
-        <div style="margin-top: 15px;">
-          <a href="${baseUrl}/reservations/${reservationId}/confirm-email" 
-             style="display: inline-block; padding: 12px 24px; background-color: #10b981; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 14px; margin-right: 10px;">
-             Sí, Confirmar Asistencia
-          </a>
-          <a href="${baseUrl}/reservations/${reservationId}/cancel-email" 
-             style="display: inline-block; padding: 12px 24px; background-color: #ef4444; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 14px;">
-             No podré asistir
-          </a>
+      <p style="font-size: 16px; margin-bottom: 20px; font-weight: bold; color: #1e293b;">
+        ¡Estás a un paso de confirmar ${introText}
+      </p>
+
+      <!-- Banner de Urgencia (5 minutos) -->
+      <div style="background-color: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; padding: 16px; margin-bottom: 25px;">
+        <table style="width: 100%; border-collapse: collapse;">
+          <tr>
+            <td style="vertical-align: top; width: 30px; font-size: 22px; padding: 0;">⏱️</td>
+            <td style="padding: 0 0 0 10px;">
+              <p style="margin: 0; color: #b45309; font-weight: bold; font-size: 14px;">Atención</p>
+              <p style="margin: 4px 0 0 0; color: #78350f; font-size: 13px; line-height: 1.5;">
+                Debes <strong>confirmar tu reserva dentro de los próximos 5 minutos</strong>. Si no la confirmas, los cupos se liberarán automáticamente.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Detalles de la reserva -->
+      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
+        <p style="margin: 0 0 12px 0; font-size: 14px; color: #475569;">
+          <span style="margin-right: 8px;">📅</span><strong>Fecha y hora:</strong> ${scheduleDateTime} hrs.
+        </p>
+        <div style="margin: 0; font-size: 14px; color: #475569;">
+          <p style="margin: 0 0 8px 0;"><span style="margin-right: 8px;">👥</span><strong>Integrantes:</strong></p>
+          <ul style="margin: 0; padding-left: 10px;">
+            ${companionsHtml || '<li style="list-style-type: none; color: #94a3b8;">Sin acompañantes</li>'}
+          </ul>
         </div>
       </div>
 
-      <div style="text-align: center; margin-top: 20px; padding: 20px; border: 1px dashed #cccccc; border-radius: 8px; background-color: #fafafa;">
-        <h3 style="margin-top: 0; color: #007BFF;">Pase de Entrada (Código QR)</h3>
-        <p style="font-size: 13px; color: #555555; margin-bottom: 15px;">Presenta este código en la entrada para realizar tu Check-In:</p>
-        <img src="cid:reservation-qr" style="width: 200px; height: 200px; display: block; margin: 0 auto; border: 1px solid #dddddd;" alt="Código QR de Reserva"/>
-        <p style="font-size: 11px; color: #777777; margin-top: 10px;">ID de Reserva: ${reservationId}</p>
+      <!-- Botón de Confirmación -->
+      <div style="text-align: center; margin: 30px 0 15px 0;">
+        <p style="font-size: 14px; color: #64748b; margin-bottom: 18px;">👇 Presiona el botón para confirmar:</p>
+        <a href="${baseUrl}/reservations/${reservationId}/confirm-email" 
+           style="display: inline-block; padding: 14px 32px; background: ${btnGradient}; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 15px; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.2);">
+           CONFIRMAR RESERVA
+        </a>
+        <p style="font-size: 12px; color: #94a3b8; margin-top: 18px;">
+          Una vez confirmada, recibirás el código QR de ingreso. 🎟️
+        </p>
       </div>
     `;
 
-    const html = this._generateModernHtmlTemplate('Confirmación de Reserva', emailContent);
+    const html = this._generateModernHtmlTemplate('Confirma tu Reserva', emailContent, headerColor);
 
     await transporter.sendMail({
       from,
       to: email,
-      subject: 'Reserva confirmada - Reserva Horarios',
-      text: `Hola ${guardianName}, tu reserva fue registrada correctamente.\n\nFecha y hora: ${scheduleDateTime}\n\nAcompanantes:\n${companionsText || '- Sin acompanantes'}\n\nID de Reserva: ${reservationId}\nEnlace de Check-In: ${checkInUrl}`,
+      subject,
+      text: `¡Estás a un paso de confirmar tu reserva! \n\nDebes confirmar tu reserva dentro de los próximos 5 minutos. Si no la confirmas, los cupos se liberarán automáticamente.\n\nFecha y hora: ${scheduleDateTime} hrs.\n\nIntegrantes:\n${companionsText || '- Sin acompañantes'}\n\nPresiona el siguiente enlace para confirmar:\n${baseUrl}/reservations/${reservationId}/confirm-email\n\nUna vez confirmada, recibirás el código QR de ingreso.`,
       html,
-      attachments: [
-        {
-          filename: 'qrcode.png',
-          content: qrBuffer,
-          cid: 'reservation-qr',
-        },
-      ],
     });
   }
 }

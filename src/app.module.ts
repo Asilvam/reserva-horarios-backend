@@ -21,7 +21,7 @@ import { BullModule } from '@nestjs/bullmq';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
-        const redisUrl = new URL(configService.get<string>('REDISCLOUD_URL', 'redis://localhost:6379'));
+        const redisUrl = new URL(configService.get<string>('REDIS_URL', 'redis://localhost:6379'));
 
         return {
           connection: {
