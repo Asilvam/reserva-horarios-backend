@@ -1247,8 +1247,9 @@ export class ReservationsService {
     const checkInUrl = `${baseUrl}/reservations/${id}/check-in`;
     return QRCode.toBuffer(checkInUrl, {
       type: 'png',
-      width: 400,
-      margin: 1,
+      width: 600,
+      margin: 4,
+      errorCorrectionLevel: 'Q',
     });
   }
 
@@ -1439,11 +1440,19 @@ export class ReservationsService {
 
     // 1. Enviar Correo Final con QR Inline (CID)
     try {
+      const mailCompanions = [
+        {
+          name: guardian.name,
+          rut: guardian.rut,
+        },
+        ...reservation.attendingDependents,
+      ];
+
       await this.mailService.sendActiveReservationMail(
         guardian.email,
         guardian.name,
         scheduleDateTime,
-        reservation.attendingDependents,
+        mailCompanions,
         reservation._id.toString(),
         qrBuffer,
         reservation.eventType,

@@ -36,7 +36,6 @@ export class ReservationsController {
     const buffer = await this.reservationsService.getQrCodeBuffer(id);
     res.set({
       'Content-Type': 'image/png',
-      'Content-Disposition': `attachment; filename="reserva-${id}.png"`,
       'Content-Length': buffer.length,
     });
     res.end(buffer);
