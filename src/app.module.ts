@@ -15,13 +15,20 @@ import { BullModule } from '@nestjs/bullmq';
 
 @Module({
   imports: [
+    ConfigModule.forRoot({
+      isGlobal: true, // Makes ConfigModule available globally
+    }),
     DatabaseModule,
     SchedulesModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
-        const redisUriString = configService.get<string>('REDIS_URL') || configService.get<string>('REDISCLOUD_URL') || 'redis://localhost:6379';
+        const redisUriString = configService.get<string>('REDIS_URL') || 
+                               process.env.REDIS_URL || 
+                               configService.get<string>('REDISCLOUD_URL') || 
+                               process.env.REDISCLOUD_URL || 
+                               'redis://localhost:6379';
 
         const redisUrl = new URL(redisUriString);
         const isSecure = redisUrl.protocol === 'rediss:';
@@ -43,9 +50,6 @@ import { BullModule } from '@nestjs/bullmq';
       },
     }),
     ReservationsModule,
-    ConfigModule.forRoot({
-      isGlobal: true, // Makes ConfigModule available globally
-    }),
     UsersModule,
     AuthModule,
     MailModule,
