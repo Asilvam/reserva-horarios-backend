@@ -21,15 +21,23 @@ import { BullModule } from '@nestjs/bullmq';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
-        const redisUrl = new URL(configService.get<string>('REDIS_URL', 'redis://localhost:6379'));
+        const redisUriString = configService.get<string>('REDIS_URL') || configService.get<string>('REDISCLOUD_URL') || 'redis://localhost:6379';
+
+        const redisUrl = new URL(redisUriString);
+        const isSecure = redisUrl.protocol === 'rediss:';
 
         return {
           connection: {
             host: redisUrl.hostname,
             port: Number(redisUrl.port),
-            password: redisUrl.password,
-            // Para Heroku Redis con TLS, descomenta la siguiente línea.
-            // tls: { rejectUnauthorized: false },
+            username: redisUrl.username || undefined,
+            password: redisUrl.password || undefined,
+            ...(isSecure && {
+              tls: {
+                rejectUnauthorized: false,
+              },
+            }),
+            maxRetriesPerRequest: null,
           },
         };
       },
