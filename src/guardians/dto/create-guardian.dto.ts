@@ -36,8 +36,4 @@ export class CreateGuardianDto {
   @IsBoolean()
   @IsOptional()
   acceptMarketing?: boolean;
-
-  @IsBoolean()
-  @IsOptional()
-  acceptDataTerms?: boolean;
 }

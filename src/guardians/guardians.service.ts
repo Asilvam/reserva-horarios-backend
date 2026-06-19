@@ -99,7 +99,6 @@ export class GuardiansService {
       if (createGuardianDto.emergencyName) guardian.emergencyName = createGuardianDto.emergencyName;
       if (createGuardianDto.emergencyPhone) guardian.emergencyPhone = createGuardianDto.emergencyPhone;
       guardian.acceptMarketing = createGuardianDto.acceptMarketing ?? false;
-      guardian.acceptDataTerms = createGuardianDto.acceptDataTerms ?? false;
 
       return await guardian.save();
     }

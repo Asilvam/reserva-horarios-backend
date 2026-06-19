@@ -32,9 +32,6 @@ export class Guardian extends Document {
 
   @Prop({ required: false, default: false })
   acceptMarketing?: boolean;
-
-  @Prop({ required: false, default: false })
-  acceptDataTerms?: boolean;
 }
 
 export const GuardianSchema = SchemaFactory.createForClass(Guardian);
