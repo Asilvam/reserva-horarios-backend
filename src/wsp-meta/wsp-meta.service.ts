@@ -65,6 +65,48 @@ export class WspMetaService {
     }
   }
 
+  async sendImageMessage(to: string, imageUrl: string, caption?: string): Promise<void> {
+    if (!this.isEnabled()) {
+      this.logger.warn('wspMETA deshabilitado. Mensaje de imagen omitido.');
+      return;
+    }
+
+    const token = this.configService.get<string>('WSP_META_TOKEN');
+    const phoneNumberId = this.configService.get<string>('WSP_META_PHONE_NUMBER_ID');
+    const version = this.configService.get<string>('WSP_META_API_VERSION', 'v20.0');
+
+    if (!token || !phoneNumberId) {
+      this.logger.warn('wspMETA incompleto (WSP_META_TOKEN/WSP_META_PHONE_NUMBER_ID). Mensaje de imagen omitido.');
+      return;
+    }
+
+    const normalizedTo = this.normalizePhone(to);
+    const url = `https://graph.facebook.com/${version}/${phoneNumberId}/messages`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: normalizedTo,
+        type: 'image',
+        image: {
+          link: imageUrl,
+          ...(caption && { caption }),
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`wspMETA envio de imagen fallido (${response.status}): ${body}`);
+    }
+  }
+
   private hasRequiredConfig(): boolean {
     const token = this.configService.get<string>('WSP_META_TOKEN');
     const phoneNumberId = this.configService.get<string>('WSP_META_PHONE_NUMBER_ID');

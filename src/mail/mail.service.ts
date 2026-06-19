@@ -209,4 +209,100 @@ export class MailService {
       html,
     });
   }
+
+  async sendActiveReservationMail(
+    email: string,
+    guardianName: string,
+    scheduleDateTime: string,
+    companions: Array<{ name: string; rut: string; age?: number }>,
+    reservationId: string,
+    qrBuffer: Buffer,
+    eventType?: string,
+  ) {
+    const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
+    const transporter = this.createTransport();
+
+    if (!transporter) {
+      this.logger.warn('SMTP no configurado. Correo de confirmación final de reserva omitido.');
+      return;
+    }
+
+    // Configuraciones dinámicas por tipo de evento
+    let subject = 'Confirmación de Reserva Exitosa - Reserva Horarios';
+    let headerColor = '#007BFF'; // Azul por defecto
+    let introText = 'tu reserva en <strong>Reserva Horarios</strong> ha sido confirmada con éxito.';
+
+    if (eventType === 'selva') {
+      subject = 'Reserva Confirmada en Selva Viva! 🦎🦜';
+      headerColor = '#0d9488'; // Turquesa Selva
+      introText = 'tu reserva en <strong>Selva Viva</strong> ha sido confirmada con éxito! 🦎 🦜';
+    } else if (eventType === 'patines') {
+      subject = 'Reserva Confirmada en la Pista de Hielo! ❄️⛸️';
+      headerColor = '#0284c7'; // Azul Hielo
+      introText = 'tu reserva en la <strong>Pista de Hielo</strong> ha sido confirmada con éxito! ❄️  ⛸️';
+    }
+
+    const companionsHtml = companions
+      .map(
+        (companion) => `
+      <li style="margin-bottom: 6px; list-style-type: none; display: flex; align-items: center;">
+        <span style="margin-right: 8px;">👤</span>
+        <strong>${companion.name}</strong> ${companion.rut ? `(${companion.rut})` : ''}
+      </li>
+    `,
+      )
+      .join('');
+
+    const companionsText = companions.map((companion) => `- ${companion.name} (${companion.rut})`).join('\n');
+
+    const emailContent = `
+      <p style="font-size: 16px; margin-bottom: 20px; font-weight: bold; color: #1e293b;">
+        ¡Hola ${guardianName}!
+      </p>
+      <p style="font-size: 14px; color: #334155; margin-bottom: 25px; line-height: 1.6;">
+        Queremos informarte que ${introText} Presenta el siguiente código QR en el acceso del recinto al momento de tu visita.
+      </p>
+
+      <!-- Código QR -->
+      <div style="text-align: center; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 25px; margin-bottom: 25px;">
+        <p style="margin: 0 0 15px 0; font-weight: bold; font-size: 15px; color: #1e293b;">🎟️ Código QR de Acceso</p>
+        <img src="cid:qrcode" alt="Código QR" style="display: inline-block; max-width: 220px; height: auto; border: 1px solid #cbd5e1; border-radius: 4px;" />
+        <p style="margin: 15px 0 0 0; font-size: 12px; color: #64748b;">Muestra este código QR impreso o en tu celular al ingresar.</p>
+      </div>
+
+      <!-- Detalles de la reserva -->
+      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
+        <p style="margin: 0 0 12px 0; font-size: 14px; color: #475569;">
+          <span style="margin-right: 8px;">📅</span><strong>Fecha y hora:</strong> ${scheduleDateTime} hrs.
+        </p>
+        <div style="margin: 0; font-size: 14px; color: #475569;">
+          <p style="margin: 0 0 8px 0;"><span style="margin-right: 8px;">👥</span><strong>Integrantes:</strong></p>
+          <ul style="margin: 0; padding-left: 10px;">
+            ${companionsHtml || '<li style="list-style-type: none; color: #94a3b8;">Sin acompañantes</li>'}
+          </ul>
+        </div>
+      </div>
+
+      <p style="font-size: 14px; color: #334155; line-height: 1.6;">
+        ¡Que disfrutes tu visita!
+      </p>
+    `;
+
+    const html = this._generateModernHtmlTemplate('Reserva Confirmada', emailContent, headerColor);
+
+    await transporter.sendMail({
+      from,
+      to: email,
+      subject,
+      text: `¡Tu reserva ha sido confirmada con éxito!\n\nFecha y hora: ${scheduleDateTime} hrs.\n\nIntegrantes:\n${companionsText || '- Sin acompañantes'}\n\nPresenta tu código QR de acceso al ingresar.`,
+      html,
+      attachments: [
+        {
+          filename: `reserva-${reservationId}.png`,
+          content: qrBuffer,
+          cid: 'qrcode',
+        },
+      ],
+    });
+  }
 }

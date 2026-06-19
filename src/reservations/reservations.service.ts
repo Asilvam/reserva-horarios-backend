@@ -1274,7 +1274,13 @@ export class ReservationsService {
 
     reservation.checkMail = true;
     reservation.checkMailDate = new Date();
-    return await reservation.save();
+    const savedReservation = await reservation.save();
+
+    this.sendQrNotifications(savedReservation).catch((err) => {
+      this.logger.error(`Error al enviar notificaciones de QR post-confirmación: ${err.message}`);
+    });
+
+    return savedReservation;
   }
 
   async cancelEmail(id: string): Promise<Reservation> {
@@ -1416,5 +1422,104 @@ export class ReservationsService {
     }
 
     return { success: false, message: 'No se pudo expirar la reserva.' };
+  }
+
+  private async sendQrNotifications(reservation: Reservation) {
+    const guardian = await this.guardiansService.findById(reservation.guardianId.toString());
+    const schedule = await this.scheduleModel.findById(reservation.scheduleId).exec();
+    if (!schedule) {
+      this.logger.error(`Horario no encontrado para enviar QR de la reserva ${reservation._id}`);
+      return;
+    }
+
+    const scheduleDateTime = this.formatDateTime(schedule.startTime);
+    const baseUrl = (this.configService.get<string>('BACKEND_URL') || 'http://localhost:3500').trim();
+
+    const qrBuffer = await this.getQrCodeBuffer(reservation._id.toString());
+
+    // 1. Enviar Correo Final con QR Inline (CID)
+    try {
+      await this.mailService.sendActiveReservationMail(
+        guardian.email,
+        guardian.name,
+        scheduleDateTime,
+        reservation.attendingDependents,
+        reservation._id.toString(),
+        qrBuffer,
+        reservation.eventType,
+      );
+      this.logger.log(`Correo con QR enviado con éxito para la reserva confirmada: ${reservation._id}`);
+    } catch (mailErr) {
+      this.logger.error(`Error al enviar correo con QR para la reserva ${reservation._id}: ${mailErr instanceof Error ? mailErr.message : String(mailErr)}`);
+    }
+
+    // 2. Enviar WhatsApp Final con QR de Imagen por API de Meta
+    const qrUrl = `${baseUrl}/reservations/${reservation._id}/qrcode`;
+    
+    // Títulos y Emojis dinámicos por tipo de evento
+    let titleMessage = '¡Tu reserva ha sido confirmada! 🎉';
+    let eventTitle = 'tu reserva';
+    if (reservation.eventType === 'selva') {
+      titleMessage = '¡Tu reserva para Selva Viva ha sido confirmada! 🦎🦜';
+      eventTitle = 'tu reserva en Selva Viva! 🦎🦜';
+    } else if (reservation.eventType === 'patines') {
+      titleMessage = '¡Tu reserva para la Pista de Hielo ha sido confirmada! ❄️⛸️';
+      eventTitle = 'tu reserva en la Pista de Hielo! ❄️⛸️';
+    }
+
+    // Formatear Fecha y Hora exactamente como se pide (Viernes 19 de junio de 2026 · 12:00 hrs.)
+    const startTimeDate = new Date(schedule.startTime);
+    const optionsDate: Intl.DateTimeFormatOptions = {
+      timeZone: 'America/Santiago',
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    };
+    const optionsTime: Intl.DateTimeFormatOptions = {
+      timeZone: 'America/Santiago',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    };
+    const dateLabel = startTimeDate.toLocaleDateString('es-CL', optionsDate);
+    const timeLabel = startTimeDate.toLocaleTimeString('es-CL', optionsTime);
+    const capitalizedDateLabel = dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1);
+    const formattedDateTime = `${capitalizedDateLabel} · ${timeLabel} hrs.`;
+
+    // Integrantes del Grupo
+    const groupItems: string[] = [];
+    if (reservation.guardianParticipates) {
+      groupItems.push(`* ${guardian.name} (${guardian.rut})`);
+    }
+    reservation.attendingDependents.forEach((dep) => {
+      groupItems.push(`* ${dep.name} ${dep.rut ? `(${dep.rut})` : ''}`);
+    });
+    const groupText = groupItems.join('\n');
+
+    // Mensaje estructurado de WhatsApp
+    const wspMessage = `${titleMessage}\n\n` +
+      `📅 *Fecha y hora:*\n` +
+      `${formattedDateTime}\n\n` +
+      `*Grupo registrado:*\n` +
+      `${groupText}\n\n` +
+      `🎫 *Código QR de ingreso:*\n` +
+      `Puedes descargarlo aquí: ${qrUrl}\n\n` +
+      `⚠️ *Importante:*\n` +
+      `* Llega al menos 20 minutos antes de tu horario.\n` +
+      `* Presenta este código QR al ingresar.\n` +
+      `* Revisa las normas de uso antes de tu visita.\n\n` +
+      `¡Te esperamos! 🐍🐢`;
+
+    try {
+      const wspMetaStatus = this.wspMetaService.getStatus();
+      if (wspMetaStatus.enabled && wspMetaStatus.configured) {
+        await this.wspMetaService.sendTextMessage(guardian.phone, wspMessage);
+        await this.wspMetaService.sendImageMessage(guardian.phone, qrUrl, `Código QR de acceso para ${eventTitle}`);
+        this.logger.log(`WhatsApp con QR enviado con éxito para la reserva confirmada: ${reservation._id}`);
+      }
+    } catch (wspErr) {
+      this.logger.error(`Error al enviar WhatsApp con QR para la reserva ${reservation._id}: ${wspErr instanceof Error ? wspErr.message : String(wspErr)}`);
+    }
   }
 }
