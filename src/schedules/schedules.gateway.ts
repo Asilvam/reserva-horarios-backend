@@ -10,7 +10,9 @@ import { Server, Socket } from 'socket.io';
 
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: ['https://serviciosasm.cl', 'https://www.serviciosasm.cl', 'http://localhost:5173'],
+    methods: ['GET', 'POST', 'OPTIONS'],
+    credentials: true,
   },
 })
 export class SchedulesGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
