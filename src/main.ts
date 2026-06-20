@@ -14,8 +14,7 @@ async function bootstrap() {
     }),
   );
   app.enableCors({
-    origin: ['https://serviciosasm.cl', 'https://www.serviciosasm.cl', 'http://localhost:5173'],
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    origin: '*',
     preflightContinue: false,
     allowedHeaders: ['Content-Type', 'Authorization'], // Allow only specified headers
     credentials: true,

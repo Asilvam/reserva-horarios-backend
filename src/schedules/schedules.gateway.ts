@@ -1,18 +1,10 @@
-import {
-  OnGatewayConnection,
-  OnGatewayDisconnect,
-  OnGatewayInit,
-  WebSocketGateway,
-  WebSocketServer,
-} from '@nestjs/websockets';
+import { OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
 import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 
 @WebSocketGateway({
   cors: {
-    origin: ['https://serviciosasm.cl', 'https://www.serviciosasm.cl', 'http://localhost:5173'],
-    methods: ['GET', 'POST', 'OPTIONS'],
-    credentials: true,
+    origin: '*',
   },
 })
 export class SchedulesGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
