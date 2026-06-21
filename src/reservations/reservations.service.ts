@@ -110,9 +110,7 @@ export class ReservationsService {
       });
 
       if (duplicateDependentReservation) {
-        const duplicateRut = duplicateDependentReservation.attendingDependents
-          .map((d) => d.rut)
-          .find((rut) => attendingRuts.includes(rut));
+        const duplicateRut = duplicateDependentReservation.attendingDependents.map((d) => d.rut).find((rut) => attendingRuts.includes(rut));
         this.logger.warn(`Conflicto al encolar: El acompañante con RUT ${duplicateRut} ya tiene reserva para el dia.`);
         throw new ConflictException(`El acompañante con RUT ${duplicateRut} ya tiene una reserva para ese dia.`);
       }
@@ -288,9 +286,7 @@ export class ReservationsService {
             .session(session);
 
           if (duplicateDependentReservation) {
-            const duplicateRut = duplicateDependentReservation.attendingDependents
-              .map((d) => d.rut)
-              .find((rut) => attendingRuts.includes(rut));
+            const duplicateRut = duplicateDependentReservation.attendingDependents.map((d) => d.rut).find((rut) => attendingRuts.includes(rut));
             this.logger.warn(`Conflicto: El acompañante con RUT ${duplicateRut} ya tiene reserva para el dia.`);
             throw new ConflictException(`El acompañante con RUT ${duplicateRut} ya tiene una reserva para ese dia.`);
           }
@@ -366,14 +362,14 @@ export class ReservationsService {
       await this.reservationQueue.add(
         'expire-reservation',
         { reservationId: finalReservation._id.toString() },
-        { 
+        {
           delay: 5 * 60 * 1000, // 30 minutos (1800000 ms)
-          attempts: 3,           // Intentar hasta 3 veces si falla por WriteConflict
+          attempts: 3, // Intentar hasta 3 veces si falla por WriteConflict
           backoff: {
             type: 'exponential',
-            delay: 5000,         // Reintentar tras 5s, luego 10s, etc.
+            delay: 5000, // Reintentar tras 5s, luego 10s, etc.
           },
-        }
+        },
       );
       this.logger.log(`Job de expiración programado para la reserva: ${finalReservation._id}`);
     } catch (queueErr) {
@@ -403,22 +399,13 @@ export class ReservationsService {
     ];
 
     try {
-      await this.mailService.sendReservationConfirmation(
-        guardian.email,
-        guardian.name,
-        scheduleDateTime,
-        mailCompanions,
-        reservationId,
-        eventType,
-      );
+      await this.mailService.sendReservationConfirmation(guardian.email, guardian.name, scheduleDateTime, mailCompanions, reservationId, eventType);
     } catch (error) {
       this.logger.error(`No se pudo enviar correo de confirmacion para guardianId=${guardian.email}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     // 2. Integrantes del WhatsApp (Apoderado al inicio)
-    const listItems: string[] = [
-      `- ${guardian.name} (${guardian.rut})`
-    ];
+    const listItems: string[] = [`- ${guardian.name} (${guardian.rut})`];
     attendingDependents.forEach((dep) => {
       listItems.push(`- ${dep.name} (${dep.rut})`);
     });
@@ -432,7 +419,8 @@ export class ReservationsService {
         eventTitle = 'tu reserva en la Pista de Hielo! ❄️⛸️';
       }
 
-      const message = `¡Estás a un paso de confirmar ${eventTitle}\n\n` +
+      const message =
+        `¡Estás a un paso de confirmar ${eventTitle}\n\n` +
         `Debes confirmar tu reserva dentro de los próximos 5 minutos. Si no la confirmas, los cupos se liberarán automáticamente.\n\n` +
         `📅 *Fecha y hora:* ${scheduleDateTime} hrs.\n` +
         `👥 *Integrantes:*\n${companionsText || '- Sin acompañantes'}\n\n` +
@@ -590,7 +578,7 @@ export class ReservationsService {
         isCheckedIn: reservation.isCheckedIn,
         checkInAt: reservation.checkInAt,
         isExpired,
-        status: isExpired ? 'EXPIRADA' : (reservation.isCheckedIn ? 'CHECKED_IN' : 'VIGENTE'),
+        status: isExpired ? 'EXPIRADA' : reservation.isCheckedIn ? 'CHECKED_IN' : 'VIGENTE',
         eventType: schedule?.eventType,
       },
     };
@@ -1016,9 +1004,33 @@ export class ReservationsService {
   async confirmEmailHtmlPage(id: string): Promise<string> {
     try {
       const reservation = await this.confirmEmail(id);
-      const formattedDate = reservation.reservationDay
-        ? new Date(reservation.reservationDay).toLocaleDateString('es-CL', { timeZone: 'America/Santiago', day: 'numeric', month: 'long', year: 'numeric' })
-        : 'N/A';
+
+      let formattedDate = '';
+      let formattedTime = '';
+      const schedule = reservation.scheduleId ? await this.scheduleModel.findById(reservation.scheduleId).exec() : null;
+
+      if (schedule && schedule.startTime) {
+        const startTimeDate = new Date(schedule.startTime);
+        formattedDate = startTimeDate.toLocaleDateString('es-CL', {
+          timeZone: 'America/Santiago',
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+        });
+        formattedTime = startTimeDate.toLocaleTimeString('es-CL', {
+          timeZone: 'America/Santiago',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        });
+      } else if (reservation.reservationDay) {
+        formattedDate = new Date(reservation.reservationDay).toLocaleDateString('es-CL', {
+          timeZone: 'America/Santiago',
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+        });
+      }
 
       return `
         <!DOCTYPE html>
@@ -1046,10 +1058,10 @@ export class ReservationsService {
                 <div class="icon">✓</div>
                 <p style="font-size: 16px; line-height: 1.5; color: #334155;">Muchas gracias. Hemos registrado la confirmación de tu asistencia para la reserva.</p>
                 <div class="info">
-                  <strong>Fecha de Reserva:</strong><br/>
-                  ${formattedDate}
+                  <strong>Fecha y Hora de Reserva:</strong><br/>
+                  ${formattedDate}${formattedTime ? ` · ${formattedTime} hrs.` : ''}
                 </div>
-                <p style="font-size: 13px; color: #64748b;">Te sugerimos llegar con 20 minutos de anticipación al recinto.</p>
+                <p style="font-size: 13px; color: #dc2626; font-weight: bold;">Debes llegar con 20 minutos de anticipación al recinto.</p>
               </div>
             </div>
           </body>
@@ -1264,9 +1276,7 @@ export class ReservationsService {
     }
 
     if (reservation.checkMail !== null && reservation.checkMail !== undefined) {
-      throw new ConflictException(
-        `Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} anteriormente por correo.`
-      );
+      throw new ConflictException(`Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} anteriormente por correo.`);
     }
 
     if (!reservation.state_reserve) {
@@ -1302,9 +1312,7 @@ export class ReservationsService {
         }
 
         if (reservation.checkMail !== null && reservation.checkMail !== undefined) {
-          throw new ConflictException(
-            `Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} anteriormente por correo.`
-          );
+          throw new ConflictException(`Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} anteriormente por correo.`);
         }
 
         if (!reservation.state_reserve) {
@@ -1336,10 +1344,7 @@ export class ReservationsService {
 
     if (updatedScheduleAfterCancel && cancelledReservation) {
       this.logger.log(`Cupos restaurados tras cancelación por email de la reserva ${id}. Nuevos disponibles: ${updatedScheduleAfterCancel.availableSpots}`);
-      this.schedulesGateway.broadcastSpotsUpdate(
-        cancelledReservation.scheduleId.toString(),
-        updatedScheduleAfterCancel.availableSpots
-      );
+      this.schedulesGateway.broadcastSpotsUpdate(cancelledReservation.scheduleId.toString(), updatedScheduleAfterCancel.availableSpots);
     }
 
     if (!cancelledReservation) {
@@ -1415,10 +1420,7 @@ export class ReservationsService {
 
     if (updatedScheduleAfterExpiry && expiredReservation) {
       this.logger.log(`Reserva ${id} EXPIRADA automáticamente por falta de confirmación en 30 minutos. Cupos devueltos al scheduleId=${expiredReservation.scheduleId}. Disponibles: ${updatedScheduleAfterExpiry.availableSpots}`);
-      this.schedulesGateway.broadcastSpotsUpdate(
-        expiredReservation.scheduleId.toString(),
-        updatedScheduleAfterExpiry.availableSpots
-      );
+      this.schedulesGateway.broadcastSpotsUpdate(expiredReservation.scheduleId.toString(), updatedScheduleAfterExpiry.availableSpots);
       return { success: true, message: 'Reserva expirada automáticamente por inactividad y cupos liberados.' };
     }
 
@@ -1448,15 +1450,7 @@ export class ReservationsService {
         ...reservation.attendingDependents,
       ];
 
-      await this.mailService.sendActiveReservationMail(
-        guardian.email,
-        guardian.name,
-        scheduleDateTime,
-        mailCompanions,
-        reservation._id.toString(),
-        qrBuffer,
-        reservation.eventType,
-      );
+      await this.mailService.sendActiveReservationMail(guardian.email, guardian.name, scheduleDateTime, mailCompanions, reservation._id.toString(), qrBuffer, reservation.eventType);
       this.logger.log(`Correo con QR enviado con éxito para la reserva confirmada: ${reservation._id}`);
     } catch (mailErr) {
       this.logger.error(`Error al enviar correo con QR para la reserva ${reservation._id}: ${mailErr instanceof Error ? mailErr.message : String(mailErr)}`);
@@ -1464,7 +1458,7 @@ export class ReservationsService {
 
     // 2. Enviar WhatsApp Final con QR de Imagen por API de Meta
     const qrUrl = `${baseUrl}/reservations/${reservation._id}/qrcode`;
-    
+
     // Títulos y Emojis dinámicos por tipo de evento
     let titleMessage = '¡Tu reserva ha sido confirmada! 🎉';
     let eventTitle = 'tu reserva';
@@ -1507,7 +1501,8 @@ export class ReservationsService {
     const groupText = groupItems.join('\n');
 
     // Mensaje estructurado de WhatsApp
-    const wspMessage = `${titleMessage}\n\n` +
+    const wspMessage =
+      `${titleMessage}\n\n` +
       `📅 *Fecha y hora:*\n` +
       `${formattedDateTime}\n\n` +
       `*Grupo registrado:*\n` +

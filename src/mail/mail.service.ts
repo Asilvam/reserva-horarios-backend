@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
-import * as QRCode from 'qrcode';
+// import * as QRCode from 'qrcode';
 
 @Injectable()
 export class MailService {
@@ -104,14 +104,7 @@ export class MailService {
     });
   }
 
-  async sendReservationConfirmation(
-    email: string,
-    guardianName: string,
-    scheduleDateTime: string,
-    companions: Array<{ name: string; rut: string; age?: number }>,
-    reservationId: string,
-    eventType?: string,
-  ) {
+  async sendReservationConfirmation(email: string, guardianName: string, scheduleDateTime: string, companions: Array<{ name: string; rut: string; age?: number }>, reservationId: string, eventType?: string) {
     const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
     const transporter = this.createTransport();
 
@@ -130,7 +123,7 @@ export class MailService {
 
     if (eventType === 'selva') {
       subject = 'Confirma tu reserva en Selva Viva 🦎🦜';
-      headerColor = '#0d9488'; // Turquesa Selva
+      headerColor = '#fc0303'; // Turquesa Selva
       btnGradient = 'linear-gradient(135deg, #10b981, #059669)'; // Verde Selva
       introText = 'tu reserva en <strong>Selva Viva</strong>! 🦎 🦜';
     } else if (eventType === 'patines') {
@@ -154,18 +147,15 @@ export class MailService {
     const companionsText = companions.map((companion) => `- ${companion.name} (${companion.rut})`).join('\n');
 
     const emailContent = `
-      <p style="font-size: 16px; margin-bottom: 20px; font-weight: bold; color: #1e293b;">
-        ¡Estás a un paso de confirmar ${introText}
-      </p>
-
+  
       <!-- Banner de Urgencia (5 minutos) -->
-      <div style="background-color: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; padding: 16px; margin-bottom: 25px;">
+      <div style="background-color: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; padding: 18px; margin-bottom: 25px;">
         <table style="width: 100%; border-collapse: collapse;">
           <tr>
-            <td style="vertical-align: top; width: 30px; font-size: 22px; padding: 0;">⏱️</td>
-            <td style="padding: 0 0 0 10px;">
-              <p style="margin: 0; color: #b45309; font-weight: bold; font-size: 14px;">Atención</p>
-              <p style="margin: 4px 0 0 0; color: #78350f; font-size: 13px; line-height: 1.5;">
+            <td style="vertical-align: middle; width: 45px; font-size: 36px; padding: 0; text-align: center;">⚠️</td>
+            <td style="padding: 0 0 0 15px; vertical-align: middle;">
+              <p style="margin: 0; color: #b45309; font-weight: bold; font-size: 17px;">Atención</p>
+              <p style="margin: 6px 0 0 0; color: #78350f; font-size: 15px; line-height: 1.6;">
                 Debes <strong>confirmar tu reserva dentro de los próximos 5 minutos</strong>. Si no la confirmas, los cupos se liberarán automáticamente.
               </p>
             </td>
@@ -199,7 +189,7 @@ export class MailService {
       </div>
     `;
 
-    const html = this._generateModernHtmlTemplate('Confirma tu Reserva', emailContent, headerColor);
+    const html = this._generateModernHtmlTemplate('¡Estas a un paso de confirmar tu reserva!', emailContent, headerColor);
 
     await transporter.sendMail({
       from,
@@ -210,15 +200,7 @@ export class MailService {
     });
   }
 
-  async sendActiveReservationMail(
-    email: string,
-    guardianName: string,
-    scheduleDateTime: string,
-    companions: Array<{ name: string; rut: string; age?: number }>,
-    reservationId: string,
-    qrBuffer: Buffer,
-    eventType?: string,
-  ) {
+  async sendActiveReservationMail(email: string, guardianName: string, scheduleDateTime: string, companions: Array<{ name: string; rut: string; age?: number }>, reservationId: string, qrBuffer: Buffer, eventType?: string) {
     const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
     const transporter = this.createTransport();
 
@@ -230,61 +212,82 @@ export class MailService {
     // Configuraciones dinámicas por tipo de evento
     let subject = 'Confirmación de Reserva Exitosa - Reserva Horarios';
     let headerColor = '#007BFF'; // Azul por defecto
-    let introText = 'tu reserva en <strong>Reserva Horarios</strong> ha sido confirmada con éxito.';
+    let eventName = 'Reserva Horarios';
+    let eventEmoji = '🎟️';
+    let footerEmoji = '🐍🐢';
 
     if (eventType === 'selva') {
       subject = 'Reserva Confirmada en Selva Viva! 🦎🦜';
       headerColor = '#0d9488'; // Turquesa Selva
-      introText = 'tu reserva en <strong>Selva Viva</strong> ha sido confirmada con éxito! 🦎 🦜';
+      eventName = 'Selva Viva';
+      eventEmoji = '🦎🦜';
+      footerEmoji = '🐍🐢';
     } else if (eventType === 'patines') {
       subject = 'Reserva Confirmada en la Pista de Hielo! ❄️⛸️';
       headerColor = '#0284c7'; // Azul Hielo
-      introText = 'tu reserva en la <strong>Pista de Hielo</strong> ha sido confirmada con éxito! ❄️  ⛸️';
+      eventName = 'la Pista de Hielo';
+      eventEmoji = '❄️⛸️';
+      footerEmoji = '❄️⛸️';
     }
+
+    const displayDateTime = scheduleDateTime ? scheduleDateTime.replace(/,/g, '').replace(/-/g, '·') : '';
 
     const companionsHtml = companions
       .map(
         (companion) => `
-      <li style="margin-bottom: 6px; list-style-type: none; display: flex; align-items: center;">
-        <span style="margin-right: 8px;">👤</span>
-        <strong>${companion.name}</strong> ${companion.rut ? `(${companion.rut})` : ''}
+      <li style="margin-bottom: 6px; color: #475569; font-size: 14px;">
+        <strong>${companion.name}</strong>${companion.rut ? ` (${companion.rut})` : ''}
       </li>
     `,
       )
       .join('');
 
-    const companionsText = companions.map((companion) => `- ${companion.name} (${companion.rut})`).join('\n');
+    const textCompanions = companions.map((companion) => `* ${companion.name}${companion.rut ? ` (${companion.rut})` : ''}`).join('\n');
 
     const emailContent = `
-      <p style="font-size: 16px; margin-bottom: 20px; font-weight: bold; color: #1e293b;">
-        ¡Hola ${guardianName}!
+      <p style="font-size: 16px; margin-bottom: 25px; font-weight: bold; color: #1e293b; text-align: center;">
+        ¡Tu reserva para ${eventName} ha sido confirmada! ${eventEmoji}
       </p>
-      <p style="font-size: 14px; color: #334155; margin-bottom: 25px; line-height: 1.6;">
-        Queremos informarte que ${introText} Presenta el siguiente código QR en el acceso del recinto al momento de tu visita.
-      </p>
-
-      <!-- Código QR -->
-      <div style="text-align: center; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 25px; margin-bottom: 25px;">
-        <p style="margin: 0 0 15px 0; font-weight: bold; font-size: 15px; color: #1e293b;">🎟️ Código QR de Acceso</p>
-        <img src="cid:qrcode" alt="Código QR" style="display: inline-block; max-width: 220px; height: auto; border: 1px solid #cbd5e1; border-radius: 4px;" />
-        <p style="margin: 15px 0 0 0; font-size: 12px; color: #64748b;">Muestra este código QR impreso o en tu celular al ingresar.</p>
-      </div>
 
       <!-- Detalles de la reserva -->
       <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
-        <p style="margin: 0 0 12px 0; font-size: 14px; color: #475569;">
-          <span style="margin-right: 8px;">📅</span><strong>Fecha y hora:</strong> ${scheduleDateTime} hrs.
+        <p style="margin: 0 0 10px 0; font-size: 14px; color: #1e293b; font-weight: bold;">
+          📅 Fecha y hora:
         </p>
-        <div style="margin: 0; font-size: 14px; color: #475569;">
-          <p style="margin: 0 0 8px 0;"><span style="margin-right: 8px;">👥</span><strong>Integrantes:</strong></p>
-          <ul style="margin: 0; padding-left: 10px;">
-            ${companionsHtml || '<li style="list-style-type: none; color: #94a3b8;">Sin acompañantes</li>'}
-          </ul>
-        </div>
+        <p style="margin: 0 0 20px 0; font-size: 14px; color: #475569; padding-left: 10px;">
+          ${displayDateTime} hrs.
+        </p>
+        
+        <p style="margin: 0 0 10px 0; font-size: 14px; color: #1e293b; font-weight: bold;">
+          Grupo registrado:
+        </p>
+        <ul style="margin: 0; padding-left: 20px; color: #475569; font-size: 14px; line-height: 1.6;">
+          ${companionsHtml || '<li style="list-style-type: none; color: #94a3b8;">Sin acompañantes</li>'}
+        </ul>
       </div>
 
-      <p style="font-size: 14px; color: #334155; line-height: 1.6;">
-        ¡Que disfrutes tu visita!
+      <!-- Código QR de ingreso -->
+      <div style="text-align: center; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 25px; margin-bottom: 25px;">
+        <p style="margin: 0 0 15px 0; font-weight: bold; font-size: 14px; color: #1e293b; text-transform: uppercase; letter-spacing: 0.5px;">
+          🎫 Código QR de ingreso:
+        </p>
+        <img src="cid:qrcode" alt="Código QR" style="display: inline-block; max-width: 220px; height: auto;" />
+      </div>
+
+      <!-- Importante -->
+      <div style="background-color: #fffbeb; border-left: 4px solid #f59e0b; border-radius: 4px; padding: 15px 20px; margin: 25px 0;">
+        <p style="margin: 0 0 8px 0; font-weight: bold; font-size: 14px; color: #b45309; text-transform: uppercase; letter-spacing: 0.5px;">
+          ⚠️ Importante:
+        </p>
+        <ul style="margin: 0; padding-left: 15px; color: #78350f; font-size: 13.5px; line-height: 1.6;">
+          <li style="margin-bottom: 6px;">Llega al menos 20 minutos antes de tu horario.</li>
+          <li style="margin-bottom: 6px;">Presenta este código QR al ingresar.</li>
+          <li style="margin-bottom: 6px;">Revisa las normas de uso antes de tu visita.</li>
+        </ul>
+      </div>
+
+      <p style="font-size: 16px; font-weight: bold; color: #1e293b; text-align: center; margin-top: 30px; margin-bottom: 0;">
+        ¡Te esperamos! ${footerEmoji}
       </p>
     `;
 
@@ -294,7 +297,19 @@ export class MailService {
       from,
       to: email,
       subject,
-      text: `¡Tu reserva ha sido confirmada con éxito!\n\nFecha y hora: ${scheduleDateTime} hrs.\n\nIntegrantes:\n${companionsText || '- Sin acompañantes'}\n\nPresenta tu código QR de acceso al ingresar.`,
+      text:
+        `¡Tu reserva para ${eventName} ha sido confirmada! ${eventEmoji}\n\n` +
+        `📅 Fecha y hora:\n` +
+        `${displayDateTime} hrs.\n\n` +
+        `Grupo registrado:\n` +
+        `${textCompanions || '* Sin acompañantes'}\n\n` +
+        `🎟️ Código QR de ingreso:\n` +
+        `(QR adjunto)\n\n` +
+        `⚠️ Importante:\n` +
+        `* Llega al menos 20 minutos antes de tu horario.\n` +
+        `* Presenta este código QR al ingresar.\n` +
+        `* Revisa las normas de uso antes de tu visita.\n\n` +
+        `¡Te esperamos! ${footerEmoji}`,
       html,
       attachments: [
         {
