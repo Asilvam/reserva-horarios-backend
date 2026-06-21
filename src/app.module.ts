@@ -12,6 +12,7 @@ import { MailModule } from './mail/mail.module';
 import { AdminModule } from './admin/admin.module';
 import { WspMetaModule } from './wsp-meta/wsp-meta.module';
 import { BullModule } from '@nestjs/bullmq';
+import { RemindersModule } from './reminders/reminders.module';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { BullModule } from '@nestjs/bullmq';
     WspMetaModule,
     AdminModule,
     GuardiansModule,
+    RemindersModule,
   ],
   controllers: [AppController],
   providers: [AppService],
