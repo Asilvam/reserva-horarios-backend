@@ -1403,7 +1403,7 @@ export class ReservationsService {
     }
 
     if (reservation.checkMail !== null && reservation.checkMail !== undefined) {
-      throw new ConflictException(`Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} anteriormente por correo.`);
+      throw new ConflictException(`Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} pues expiro.`);
     }
 
     if (!reservation.state_reserve) {
