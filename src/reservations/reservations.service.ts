@@ -77,33 +77,22 @@ export class ReservationsService {
       throw new ConflictException('No hay suficientes cupos disponibles para esta reserva.');
     }
 
-    // 5. Validar si ya existe reserva activa para el día y evento específico
-    const reservationDay = getChileStartOfDayUtc(schedule.startTime);
-    const nextReservationDay = new Date(reservationDay.getTime() + 24 * 60 * 60 * 1000);
-
-    const existingReservationForDay = await this.reservationModel.exists({
+    // 5. Validar si ya existe reserva activa o concluida para el evento específico en el historial
+    const existingReservation = await this.reservationModel.exists({
       guardianId: dto.guardianId,
-      reservationDay: {
-        $gte: reservationDay,
-        $lt: nextReservationDay,
-      },
       eventType: schedule.eventType,
       state_reserve: true,
     });
 
-    if (existingReservationForDay) {
-      this.logger.warn(`Conflicto al encolar: El inscrito ${dto.guardianId} ya tiene reserva para el dia.`);
-      throw new ConflictException('La persona ya tiene una reserva para ese dia.');
+    if (existingReservation) {
+      this.logger.warn(`Conflicto al encolar: El inscrito ${dto.guardianId} ya tiene una reserva activa o concluida para el evento ${schedule.eventType}.`);
+      throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
     }
 
-    // Validar si alguno de los acompañantes ya tiene una reserva activa para ese mismo día y evento
+    // Validar si alguno de los acompañantes ya tiene una reserva activa o concluida en el historial del evento
     const attendingRuts = dto.attendingDependents?.map((d) => d.rut) || [];
     if (attendingRuts.length > 0) {
       const duplicateDependentReservation = await this.reservationModel.findOne({
-        reservationDay: {
-          $gte: reservationDay,
-          $lt: nextReservationDay,
-        },
         eventType: schedule.eventType,
         state_reserve: true,
         'attendingDependents.rut': { $in: attendingRuts },
@@ -111,8 +100,8 @@ export class ReservationsService {
 
       if (duplicateDependentReservation) {
         const duplicateRut = duplicateDependentReservation.attendingDependents.map((d) => d.rut).find((rut) => attendingRuts.includes(rut));
-        this.logger.warn(`Conflicto al encolar: El acompañante con RUT ${duplicateRut} ya tiene reserva para el dia.`);
-        throw new ConflictException(`El acompañante con RUT ${duplicateRut} ya tiene una reserva para ese dia.`);
+        this.logger.warn(`Conflicto al encolar: El acompañante con RUT ${duplicateRut} ya tiene una reserva activa o concluida para el evento ${schedule.eventType}.`);
+        throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
       }
     }
 
@@ -252,33 +241,24 @@ export class ReservationsService {
         }
 
         const reservationDay = getChileStartOfDayUtc(scheduleInTx.startTime);
-        const nextReservationDay = new Date(reservationDay.getTime() + 24 * 60 * 60 * 1000);
 
-        const existingReservationForDay = await this.reservationModel
+        const existingReservation = await this.reservationModel
           .exists({
             guardianId,
-            reservationDay: {
-              $gte: reservationDay,
-              $lt: nextReservationDay,
-            },
             eventType: scheduleInTx.eventType,
             state_reserve: true,
           })
           .session(session);
 
-        if (existingReservationForDay) {
-          this.logger.warn(`Conflicto: El inscrito ${guardianId} ya tiene reserva para el dia.`);
-          throw new ConflictException('La persona ya tiene una reserva para ese dia.');
+        if (existingReservation) {
+          this.logger.warn(`Conflicto: El inscrito ${guardianId} ya tiene una reserva activa o concluida para el evento ${scheduleInTx.eventType}.`);
+          throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
         }
 
-        // Validar en la transacción que ningún acompañante ya tenga una reserva activa el mismo día y evento
+        // Validar en la transacción que ningún acompañante ya tenga una reserva activa o concluida para el mismo evento
         if (attendingRuts.length > 0) {
           const duplicateDependentReservation = await this.reservationModel
             .findOne({
-              reservationDay: {
-                $gte: reservationDay,
-                $lt: nextReservationDay,
-              },
               eventType: scheduleInTx.eventType,
               state_reserve: true,
               'attendingDependents.rut': { $in: attendingRuts },
@@ -287,8 +267,8 @@ export class ReservationsService {
 
           if (duplicateDependentReservation) {
             const duplicateRut = duplicateDependentReservation.attendingDependents.map((d) => d.rut).find((rut) => attendingRuts.includes(rut));
-            this.logger.warn(`Conflicto: El acompañante con RUT ${duplicateRut} ya tiene reserva para el dia.`);
-            throw new ConflictException(`El acompañante con RUT ${duplicateRut} ya tiene una reserva para ese dia.`);
+            this.logger.warn(`Conflicto: El acompañante con RUT ${duplicateRut} ya tiene una reserva activa o concluida para el evento ${scheduleInTx.eventType}.`);
+            throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
           }
         }
 
