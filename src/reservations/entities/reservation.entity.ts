@@ -61,6 +61,18 @@ export class Reservation extends Document {
 
   @Prop({ required: false })
   checkWspDate?: Date;
+
+  @Prop({ required: true, default: false })
+  reminderMailSent: boolean;
+
+  @Prop({ required: false })
+  reminderMailSentAt?: Date;
+
+  @Prop({ required: true, default: false })
+  reminderWspSent: boolean;
+
+  @Prop({ required: false })
+  reminderWspSentAt?: Date;
 }
 
 export const ReservationSchema = SchemaFactory.createForClass(Reservation);
