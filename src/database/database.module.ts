@@ -9,7 +9,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
         uri: configService.get<string>('MONGODB_URI'), // Connection URI for MongoDB
-        dbName: 'ReservaHorarios', // Database name
+        dbName: configService.get<string>('DBNAME') || 'ReservaHorarios', // Database name
       }),
     }),
   ],
