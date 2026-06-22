@@ -77,9 +77,21 @@ export class ReservationsService {
       throw new ConflictException('No hay suficientes cupos disponibles para esta reserva.');
     }
 
+    // Obtener información del tutor para su RUT
+    const guardian = await this.guardiansService.findById(dto.guardianId);
+
     // 5. Validar si ya existe reserva activa o concluida para el evento específico en el historial
-    const existingReservation = await this.reservationModel.exists({
-      guardianId: dto.guardianId,
+    
+    // A. Validación del tutor como creador de reserva (Límite existente)
+    const guardianIdStr = dto.guardianId.toString();
+    let guardianIdObj: any = null;
+    try {
+      guardianIdObj = new Types.ObjectId(guardianIdStr);
+    } catch (e) {}
+    const guardianIdVariants = [guardianIdStr, guardianIdObj].filter(Boolean);
+
+    const existingReservation = await this.reservationModel.collection.findOne({
+      guardianId: { $in: guardianIdVariants },
       eventType: schedule.eventType,
       state_reserve: true,
     });
@@ -89,9 +101,23 @@ export class ReservationsService {
       throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
     }
 
-    // Validar si alguno de los acompañantes ya tiene una reserva activa o concluida en el historial del evento
+    // B. Validación: ¿El tutor (si participa) ya está registrado como ACOMPAÑANTE en otra reserva?
+    if (dto.guardianParticipates) {
+      const tutorRegisteredAsDependent = await this.reservationModel.exists({
+        eventType: schedule.eventType,
+        state_reserve: true,
+        'attendingDependents.rut': guardian.rut,
+      });
+
+      if (tutorRegisteredAsDependent) {
+        this.logger.warn(`Conflicto al encolar: El tutor ${guardian.rut} ya participa como acompañante en otra reserva.`);
+        throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+      }
+    }
+
     const attendingRuts = dto.attendingDependents?.map((d) => d.rut) || [];
     if (attendingRuts.length > 0) {
+      // C. Validación: ¿Alguno de los acompañantes ya está registrado como ACOMPAÑANTE en otra reserva?
       const duplicateDependentReservation = await this.reservationModel.findOne({
         eventType: schedule.eventType,
         state_reserve: true,
@@ -103,7 +129,26 @@ export class ReservationsService {
         this.logger.warn(`Conflicto al encolar: El acompañante con RUT ${duplicateRut} ya tiene una reserva activa o concluida para el evento ${schedule.eventType}.`);
         throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
       }
+
+      // D. Validación: ¿Alguno de los acompañantes ya está registrado como TUTOR en otra reserva?
+      const matchingGuardians = await this.guardiansService.findManyByRuts(attendingRuts);
+      const dependentGuardianIds = matchingGuardians.map((g) => g._id);
+
+      if (dependentGuardianIds.length > 0) {
+        const dependentGuardianIdVariants = dependentGuardianIds.flatMap(id => [id, id.toString()]);
+        const duplicateGuardianReservation = await this.reservationModel.collection.findOne({
+          eventType: schedule.eventType,
+          state_reserve: true,
+          guardianId: { $in: dependentGuardianIdVariants },
+        });
+
+        if (duplicateGuardianReservation) {
+          this.logger.warn(`Conflicto al encolar: Uno de los acompañantes ya es tutor y tiene una reserva activa.`);
+          throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+        }
+      }
     }
+
 
     const jobName = 'process-single-reservation';
 
@@ -242,21 +287,47 @@ export class ReservationsService {
 
         const reservationDay = getChileStartOfDayUtc(scheduleInTx.startTime);
 
-        const existingReservation = await this.reservationModel
-          .exists({
-            guardianId,
+        // A. Validación del tutor como creador de reserva (Límite existente)
+        const guardianIdStr = guardianId.toString();
+        let guardianIdObj: any = null;
+        try {
+          guardianIdObj = new Types.ObjectId(guardianIdStr);
+        } catch (e) {}
+        const guardianIdVariants = [guardianIdStr, guardianIdObj].filter(Boolean);
+
+        const existingReservation = await this.reservationModel.collection.findOne(
+          {
+            guardianId: { $in: guardianIdVariants },
             eventType: scheduleInTx.eventType,
             state_reserve: true,
-          })
-          .session(session);
+          },
+          { session }
+        );
 
         if (existingReservation) {
           this.logger.warn(`Conflicto: El inscrito ${guardianId} ya tiene una reserva activa o concluida para el evento ${scheduleInTx.eventType}.`);
           throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
         }
 
+        // B. Validación: ¿El tutor (si participa) ya está registrado como ACOMPAÑANTE en otra reserva?
+        if (dto.guardianParticipates) {
+          const tutorRegisteredAsDependent = await this.reservationModel
+            .exists({
+              eventType: scheduleInTx.eventType,
+              state_reserve: true,
+              'attendingDependents.rut': guardian.rut,
+            })
+            .session(session);
+
+          if (tutorRegisteredAsDependent) {
+            this.logger.warn(`Conflicto: El tutor ${guardian.rut} ya participa como acompañante en otra reserva.`);
+            throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+          }
+        }
+
         // Validar en la transacción que ningún acompañante ya tenga una reserva activa o concluida para el mismo evento
         if (attendingRuts.length > 0) {
+          // C. Validación: ¿Alguno de los acompañantes ya está registrado como ACOMPAÑANTE en otra reserva?
           const duplicateDependentReservation = await this.reservationModel
             .findOne({
               eventType: scheduleInTx.eventType,
@@ -270,7 +341,29 @@ export class ReservationsService {
             this.logger.warn(`Conflicto: El acompañante con RUT ${duplicateRut} ya tiene una reserva activa o concluida para el evento ${scheduleInTx.eventType}.`);
             throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
           }
+
+          // D. Validación: ¿Alguno de los acompañantes ya está registrado como TUTOR en otra reserva?
+          const matchingGuardians = await this.guardiansService.findManyByRuts(attendingRuts);
+          const dependentGuardianIds = matchingGuardians.map((g) => g._id);
+
+          if (dependentGuardianIds.length > 0) {
+            const dependentGuardianIdVariants = dependentGuardianIds.flatMap(id => [id, id.toString()]);
+            const duplicateGuardianReservation = await this.reservationModel.collection.findOne(
+              {
+                eventType: scheduleInTx.eventType,
+                state_reserve: true,
+                guardianId: { $in: dependentGuardianIdVariants },
+              },
+              { session }
+            );
+
+            if (duplicateGuardianReservation) {
+              this.logger.warn(`Conflicto: Uno de los acompañantes ya es tutor y tiene una reserva activa.`);
+              throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+            }
+          }
         }
+
 
         const updatedScheduleInTx = await this.scheduleModel.findOneAndUpdate(
           {
@@ -357,6 +450,60 @@ export class ReservationsService {
     }
 
     return finalReservation;
+  }
+
+  async checkRutRegistration(rut: string, eventType: string): Promise<{ registered: boolean }> {
+    const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
+    if (clean.length < 2) {
+      return { registered: false };
+    }
+    const body = clean.slice(0, -1);
+    const dv = clean.slice(-1);
+    const formatted = `${body}-${dv}`;
+
+    // Generar formato con puntos
+    let formattedBody = '';
+    let count = 0;
+    for (let i = body.length - 1; i >= 0; i--) {
+      formattedBody = body[i] + formattedBody;
+      count++;
+      if (count % 3 === 0 && i !== 0) {
+        formattedBody = '.' + formattedBody;
+      }
+    }
+    const dotted = `${formattedBody}-${dv}`;
+
+    const rutsToCheck = [clean, formatted, dotted];
+
+    // 1. Verificar si está registrado como acompañante en alguna reserva activa
+    const dependentExists = await this.reservationModel.exists({
+      eventType,
+      state_reserve: true,
+      'attendingDependents.rut': { $in: rutsToCheck },
+    });
+
+    if (dependentExists) {
+      return { registered: true };
+    }
+
+    // 2. Verificar si está registrado como tutor en alguna reserva activa
+    const matchingGuardians = await this.guardiansService.findManyByRuts([clean]);
+    const guardianIds = matchingGuardians.map((g) => g._id);
+
+    if (guardianIds.length > 0) {
+      const guardianIdVariants = guardianIds.flatMap(id => [id, id.toString()]);
+      const guardianExists = await this.reservationModel.collection.findOne({
+        eventType,
+        state_reserve: true,
+        guardianId: { $in: guardianIdVariants },
+      });
+
+      if (guardianExists) {
+        return { registered: true };
+      }
+    }
+
+    return { registered: false };
   }
 
   private async sendReservationConfirmationNotifications(
