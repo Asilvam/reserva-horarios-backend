@@ -89,6 +89,15 @@ export class GuardiansService {
         throw new ConflictException('El número de teléfono ya está registrado por otro apoderado.');
       }
 
+      // Validar que el correo no pertenezca a OTRO apoderado
+      const existingGuardianByEmail = await this.guardianModel.findOne({
+        email: createGuardianDto.email,
+        _id: { $ne: guardian._id },
+      });
+      if (existingGuardianByEmail) {
+        throw new ConflictException('El correo electrónico ya está registrado por otro apoderado.');
+      }
+
       // Actualizar datos del apoderado
       guardian.name = createGuardianDto.name;
       guardian.phone = createGuardianDto.phone;
@@ -108,6 +117,12 @@ export class GuardiansService {
 
     if (existingGuardianByPhone) {
       throw new ConflictException('El número de teléfono ya está registrado por otro apoderado.');
+    }
+
+    // Validar que el correo no esté registrado por nadie
+    const existingGuardianByEmail = await this.guardianModel.findOne({ email: createGuardianDto.email });
+    if (existingGuardianByEmail) {
+      throw new ConflictException('El correo electrónico ya está registrado por otro apoderado.');
     }
 
     const newGuardian = new this.guardianModel(createGuardianDto);
@@ -143,4 +158,25 @@ export class GuardiansService {
       })
       .exec();
   }
+
+  async findManyByRuts(ruts: string[]): Promise<Guardian[]> {
+    if (!ruts || ruts.length === 0) return [];
+    const variants = new Set<string>();
+    for (const rut of ruts) {
+      const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
+      if (clean.length >= 2) {
+        variants.add(clean);
+        const body = clean.slice(0, -1);
+        const dv = clean.slice(-1);
+        variants.add(`${body}-${dv}`);
+      }
+      variants.add(rut);
+    }
+    return this.guardianModel
+      .find({
+        rut: { $in: Array.from(variants) },
+      })
+      .exec();
+  }
 }
+
