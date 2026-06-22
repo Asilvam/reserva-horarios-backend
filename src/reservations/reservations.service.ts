@@ -16,7 +16,6 @@ import { WspMetaService } from '../wsp-meta/wsp-meta.service';
 import { SchedulesGateway } from '../schedules/schedules.gateway';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { JwtService } from '@nestjs/jwt';
 
 export type ReservationQueuePayload = {
   dto: CreateReservationDto;
@@ -36,7 +35,6 @@ export class ReservationsService {
     private wspMetaService: WspMetaService,
     private schedulesGateway: SchedulesGateway,
     private configService: ConfigService,
-    private readonly jwtService: JwtService,
   ) {}
 
   async enqueueReservation(dto: CreateReservationDto, authUser?: AuthUser): Promise<{ success: boolean; message: string; jobId: string | undefined }> {
