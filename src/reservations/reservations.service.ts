@@ -16,6 +16,7 @@ import { WspMetaService } from '../wsp-meta/wsp-meta.service';
 import { SchedulesGateway } from '../schedules/schedules.gateway';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { JwtService } from '@nestjs/jwt';
 
 export type ReservationQueuePayload = {
   dto: CreateReservationDto;
@@ -35,6 +36,7 @@ export class ReservationsService {
     private wspMetaService: WspMetaService,
     private schedulesGateway: SchedulesGateway,
     private configService: ConfigService,
+    private readonly jwtService: JwtService,
   ) {}
 
   async enqueueReservation(dto: CreateReservationDto, authUser?: AuthUser): Promise<{ success: boolean; message: string; jobId: string | undefined }> {
@@ -81,7 +83,7 @@ export class ReservationsService {
     const guardian = await this.guardiansService.findById(dto.guardianId);
 
     // 5. Validar si ya existe reserva activa o concluida para el evento específico en el historial
-    
+
     // A. Validación del tutor como creador de reserva (Límite existente)
     const guardianIdStr = dto.guardianId.toString();
     let guardianIdObj: any = null;
@@ -98,7 +100,9 @@ export class ReservationsService {
 
     if (existingReservation) {
       this.logger.warn(`Conflicto al encolar: El inscrito ${dto.guardianId} ya tiene una reserva activa o concluida para el evento ${schedule.eventType}.`);
-      throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+      throw new ConflictException(
+        'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+      );
     }
 
     // B. Validación: ¿El tutor (si participa) ya está registrado como ACOMPAÑANTE en otra reserva?
@@ -111,7 +115,9 @@ export class ReservationsService {
 
       if (tutorRegisteredAsDependent) {
         this.logger.warn(`Conflicto al encolar: El tutor ${guardian.rut} ya participa como acompañante en otra reserva.`);
-        throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+        throw new ConflictException(
+          'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+        );
       }
     }
 
@@ -127,7 +133,9 @@ export class ReservationsService {
       if (duplicateDependentReservation) {
         const duplicateRut = duplicateDependentReservation.attendingDependents.map((d) => d.rut).find((rut) => attendingRuts.includes(rut));
         this.logger.warn(`Conflicto al encolar: El acompañante con RUT ${duplicateRut} ya tiene una reserva activa o concluida para el evento ${schedule.eventType}.`);
-        throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+        throw new ConflictException(
+          'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+        );
       }
 
       // D. Validación: ¿Alguno de los acompañantes ya está registrado como TUTOR en otra reserva?
@@ -135,7 +143,7 @@ export class ReservationsService {
       const dependentGuardianIds = matchingGuardians.map((g) => g._id);
 
       if (dependentGuardianIds.length > 0) {
-        const dependentGuardianIdVariants = dependentGuardianIds.flatMap(id => [id, id.toString()]);
+        const dependentGuardianIdVariants = dependentGuardianIds.flatMap((id) => [id, id.toString()]);
         const duplicateGuardianReservation = await this.reservationModel.collection.findOne({
           eventType: schedule.eventType,
           state_reserve: true,
@@ -144,11 +152,12 @@ export class ReservationsService {
 
         if (duplicateGuardianReservation) {
           this.logger.warn(`Conflicto al encolar: Uno de los acompañantes ya es tutor y tiene una reserva activa.`);
-          throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+          throw new ConflictException(
+            'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+          );
         }
       }
     }
-
 
     const jobName = 'process-single-reservation';
 
@@ -301,12 +310,14 @@ export class ReservationsService {
             eventType: scheduleInTx.eventType,
             state_reserve: true,
           },
-          { session }
+          { session },
         );
 
         if (existingReservation) {
           this.logger.warn(`Conflicto: El inscrito ${guardianId} ya tiene una reserva activa o concluida para el evento ${scheduleInTx.eventType}.`);
-          throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+          throw new ConflictException(
+            'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+          );
         }
 
         // B. Validación: ¿El tutor (si participa) ya está registrado como ACOMPAÑANTE en otra reserva?
@@ -321,7 +332,9 @@ export class ReservationsService {
 
           if (tutorRegisteredAsDependent) {
             this.logger.warn(`Conflicto: El tutor ${guardian.rut} ya participa como acompañante en otra reserva.`);
-            throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+            throw new ConflictException(
+              'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+            );
           }
         }
 
@@ -339,7 +352,9 @@ export class ReservationsService {
           if (duplicateDependentReservation) {
             const duplicateRut = duplicateDependentReservation.attendingDependents.map((d) => d.rut).find((rut) => attendingRuts.includes(rut));
             this.logger.warn(`Conflicto: El acompañante con RUT ${duplicateRut} ya tiene una reserva activa o concluida para el evento ${scheduleInTx.eventType}.`);
-            throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+            throw new ConflictException(
+              'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+            );
           }
 
           // D. Validación: ¿Alguno de los acompañantes ya está registrado como TUTOR en otra reserva?
@@ -347,23 +362,24 @@ export class ReservationsService {
           const dependentGuardianIds = matchingGuardians.map((g) => g._id);
 
           if (dependentGuardianIds.length > 0) {
-            const dependentGuardianIdVariants = dependentGuardianIds.flatMap(id => [id, id.toString()]);
+            const dependentGuardianIdVariants = dependentGuardianIds.flatMap((id) => [id, id.toString()]);
             const duplicateGuardianReservation = await this.reservationModel.collection.findOne(
               {
                 eventType: scheduleInTx.eventType,
                 state_reserve: true,
                 guardianId: { $in: dependentGuardianIdVariants },
               },
-              { session }
+              { session },
             );
 
             if (duplicateGuardianReservation) {
               this.logger.warn(`Conflicto: Uno de los acompañantes ya es tutor y tiene una reserva activa.`);
-              throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+              throw new ConflictException(
+                'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+              );
             }
           }
         }
-
 
         const updatedScheduleInTx = await this.scheduleModel.findOneAndUpdate(
           {
@@ -430,7 +446,7 @@ export class ReservationsService {
     this.logger.log(`Reserva creada exitosamente: reservationId=${finalReservation._id}`);
     await this.sendReservationConfirmationNotifications(guardian, finalReservationStartTime, dto.attendingDependents, finalReservation._id.toString(), finalReservation.eventType);
 
-    // Programar la expiración automática en 30 minutos con reintentos para alta concurrencia
+    // Programar la expiración automática en 5 minutos con reintentos para alta concurrencia
     try {
       await this.reservationQueue.add(
         'expire-reservation',
@@ -491,7 +507,7 @@ export class ReservationsService {
     const guardianIds = matchingGuardians.map((g) => g._id);
 
     if (guardianIds.length > 0) {
-      const guardianIdVariants = guardianIds.flatMap(id => [id, id.toString()]);
+      const guardianIdVariants = guardianIds.flatMap((id) => [id, id.toString()]);
       const guardianExists = await this.reservationModel.collection.findOne({
         eventType,
         state_reserve: true,
@@ -504,6 +520,29 @@ export class ReservationsService {
     }
 
     return { registered: false };
+  }
+
+  async handleActionToken(token: string): Promise<any> {
+    try {
+      const payload = this.jwtService.verify(token);
+      const { reservationId, action } = payload;
+
+      if (!reservationId || !action) {
+        throw new BadRequestException('Token inválido o mal estructurado.');
+      }
+      // Si todo es correcto, puenteamos a los flujos HTML nativos que ya tienes hechos
+      if (action === 'confirm') {
+        return this.confirmEmailRemHtmlPage(reservationId);
+      } else if (action === 'cancel') {
+        return this.cancelEmailRemHtmlPage(reservationId);
+      } else {
+        throw new BadRequestException('Acción no soportada.');
+      }
+    } catch (error: any) {
+      if (error.name === 'TokenExpiredError') {
+        throw new BadRequestException('El token ha expirado.');
+      }
+    }
   }
 
   private async sendReservationConfirmationNotifications(
@@ -1128,6 +1167,144 @@ export class ReservationsService {
     `;
   }
 
+  async confirmEmailRemHtmlPage(id: string): Promise<string> {
+    try {
+      const reservation = await this.confirmEmail(id);
+
+      let formattedDate = '';
+      let formattedTime = '';
+      const schedule = reservation.scheduleId ? await this.scheduleModel.findById(reservation.scheduleId).exec() : null;
+
+      if (schedule && schedule.startTime) {
+        const startTimeDate = new Date(schedule.startTime);
+        formattedDate = startTimeDate.toLocaleDateString('es-CL', {
+          timeZone: 'America/Santiago',
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+        });
+        formattedTime = startTimeDate.toLocaleTimeString('es-CL', {
+          timeZone: 'America/Santiago',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        });
+      } else if (reservation.reservationDay) {
+        formattedDate = new Date(reservation.reservationDay).toLocaleDateString('es-CL', {
+          timeZone: 'America/Santiago',
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+        });
+      }
+
+      return `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Asistencia Confirmada</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+              .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+              .header { background: #10b981; color: white; padding: 24px; }
+              .header h1 { margin: 0; font-size: 22px; }
+              .content { padding: 30px; }
+              .icon { font-size: 48px; color: #10b981; margin-bottom: 16px; }
+              .info { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 20px 0; font-size: 15px; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="header">
+                <h1>¡Asistencia Confirmada!</h1>
+              </div>
+              <div class="content">
+                <div class="icon">✓</div>
+                <p style="font-size: 16px; line-height: 1.5; color: #334155;">Muchas gracias. Hemos registrado la confirmación de tu asistencia para la reserva.</p>
+                <div class="info">
+                  <strong>Fecha y Hora de Reserva:</strong><br/>
+                  ${formattedDate}${formattedTime ? ` · ${formattedTime} hrs.` : ''}
+                </div>
+                <p style="font-size: 13px; color: #dc2626; font-weight: bold;">Debes llegar con 20 minutos de anticipación al recinto.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+    } catch (error: any) {
+      if (error.status === 409 || error.message?.includes('anteriormente por correo')) {
+        return `
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Reserva Ya Gestionada</title>
+              <style>
+                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+                .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+                .header { background: #d97706; color: white; padding: 24px; }
+                .header h1 { margin: 0; font-size: 22px; }
+                .content { padding: 30px; }
+                .icon { font-size: 48px; color: #d97706; margin-bottom: 16px; }
+                .warning-box { background-color: #fffbeb; border: 1px solid #fef3c7; color: #b45309; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; line-height: 1.5; text-align: left; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <div class="header">
+                  <h1>Reserva Ya Gestionada</h1>
+                </div>
+                <div class="content">
+                  <div class="icon">⚠</div>
+                  <p style="font-size: 16px; line-height: 1.5; color: #334155;">Esta invitación ya ha sido respondida previamente.</p>
+                  <div class="warning-box">
+                    <strong>Detalle:</strong><br/>
+                    ${error.message}
+                  </div>
+                  <p style="font-size: 13px; color: #64748b; margin-top: 15px;">No se permiten más cambios de estado desde el correo electrónico. Si tienes dudas o necesitas modificar tu respuesta, comunícate con soporte.</p>
+                </div>
+              </div>
+            </body>
+          </html>
+        `;
+      }
+
+      return `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Error al Confirmar</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+              .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+              .header { background: #dc2626; color: white; padding: 24px; }
+              .header h1 { margin: 0; font-size: 22px; }
+              .content { padding: 30px; }
+              .error-box { background-color: #fef2f2; border: 1px solid #fecaca; color: #991b1b; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="header">
+                <h1>Error</h1>
+              </div>
+              <div class="content">
+                <div class="error-box">
+                  ${error.message || 'No se pudo procesar la confirmación. Por favor, intenta de nuevo o comunícate con soporte.'}
+                </div>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+    }
+  }
+
   async confirmEmailHtmlPage(id: string): Promise<string> {
     try {
       const reservation = await this.confirmEmail(id);
@@ -1257,6 +1434,114 @@ export class ReservationsService {
               <div class="content">
                 <div class="error-box">
                   ${error.message || 'No se pudo procesar la confirmación. Por favor, intenta de nuevo o comunícate con soporte.'}
+                </div>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+    }
+  }
+
+   async cancelEmailRemHtmlPage(id: string): Promise<string> {
+    try {
+      await this.cancelEmail(id);
+      return `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Reserva Cancelada</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+              .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+              .header { background: #ef4444; color: white; padding: 24px; }
+              .header h1 { margin: 0; font-size: 22px; }
+              .content { padding: 30px; }
+              .icon { font-size: 48px; color: #ef4444; margin-bottom: 16px; }
+              .info { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 20px 0; font-size: 15px; color: #475569; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="header">
+                <h1>Reserva Cancelada</h1>
+              </div>
+              <div class="content">
+                <div class="icon">✓</div>
+                <p style="font-size: 16px; line-height: 1.5; color: #334155;">Tu reserva ha sido cancelada exitosamente y los cupos han sido liberados.</p>
+                <div class="info">
+                  Hemos actualizado el sistema para notificar al equipo que no asistirás. Puedes realizar una nueva reserva en nuestro sitio web cuando lo desees.
+                </div>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+    } catch (error: any) {
+      if (error.status === 409 || error.message?.includes('anteriormente por correo')) {
+        return `
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Reserva Ya Gestionada</title>
+              <style>
+                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+                .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+                .header { background: #d97706; color: white; padding: 24px; }
+                .header h1 { margin: 0; font-size: 22px; }
+                .content { padding: 30px; }
+                .icon { font-size: 48px; color: #d97706; margin-bottom: 16px; }
+                .warning-box { background-color: #fffbeb; border: 1px solid #fef3c7; color: #b45309; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; line-height: 1.5; text-align: left; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <div class="header">
+                  <h1>Reserva Ya Gestionada</h1>
+                </div>
+                <div class="content">
+                  <div class="icon">⚠</div>
+                  <p style="font-size: 16px; line-height: 1.5; color: #334155;">Esta invitación ya ha sido respondida previamente.</p>
+                  <div class="warning-box">
+                    <strong>Detalle:</strong><br/>
+                    ${error.message}
+                  </div>
+                  <p style="font-size: 13px; color: #64748b; margin-top: 15px;">No se permiten más cambios de estado desde el correo electrónico. Si tienes dudas o necesitas modificar tu respuesta, comunícate con soporte.</p>
+                </div>
+              </div>
+            </body>
+          </html>
+        `;
+      }
+
+      return `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Error al Cancelar</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+              .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
+              .header { background: #dc2626; color: white; padding: 24px; }
+              .header h1 { margin: 0; font-size: 22px; }
+              .content { padding: 30px; }
+              .error-box { background-color: #fef2f2; border: 1px solid #fecaca; color: #991b1b; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="header">
+                <h1>Error</h1>
+              </div>
+              <div class="content">
+                <div class="error-box">
+                  ${error.message || 'No se pudo procesar la cancelación. Por favor, intenta de nuevo o comunícate con soporte.'}
                 </div>
               </div>
             </div>
@@ -1403,7 +1688,7 @@ export class ReservationsService {
     }
 
     if (reservation.checkMail !== null && reservation.checkMail !== undefined) {
-      throw new ConflictException(`Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} anteriormente por correo.`);
+      throw new ConflictException(`Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} pues expiro.`);
     }
 
     if (!reservation.state_reserve) {
