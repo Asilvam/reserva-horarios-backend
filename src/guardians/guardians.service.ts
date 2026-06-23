@@ -159,6 +159,16 @@ export class GuardiansService {
       .exec();
   }
 
+  async checkEmailAvailability(email: string): Promise<{ available: boolean }> {
+    const existingGuardian = await this.guardianModel.exists({ email });
+    return { available: !existingGuardian };
+  }
+
+  async checkPhoneAvailability(phone: string): Promise<{ available: boolean }> {
+    const existingGuardian = await this.guardianModel.exists({ phone });
+    return { available: !existingGuardian };
+  }
+
   async findManyByRuts(ruts: string[]): Promise<Guardian[]> {
     if (!ruts || ruts.length === 0) return [];
     const variants = new Set<string>();
@@ -179,4 +189,3 @@ export class GuardiansService {
       .exec();
   }
 }
-

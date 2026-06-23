@@ -11,7 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { Role } from '../auth/enums/role.enum';
 import { MailService } from '../mail/mail.service';
-import { getChileDateTimeLabel, getChileStartOfDayUtc } from '../common/datetime/chile-time.util';
+import { chileLocalDateTimeToUtc, getChileDateTimeLabel, getChileStartOfDayUtc } from '../common/datetime/chile-time.util';
 import { WspMetaService } from '../wsp-meta/wsp-meta.service';
 import { SchedulesGateway } from '../schedules/schedules.gateway';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -36,6 +36,252 @@ export class ReservationsService {
     private schedulesGateway: SchedulesGateway,
     private configService: ConfigService,
   ) {}
+
+  async getPatinesDaySummary(date: string) {
+    const startOfDay = chileLocalDateTimeToUtc(date, '00:00');
+    const endOfDay = this.getNextChileDayUtc(date);
+
+    const [result] = await this.reservationModel.aggregate([
+      {
+        $match: {
+          eventType: 'patines',
+          state_reserve: true,
+          checkMail: true,
+          reservationDay: {
+            $gte: startOfDay,
+            $lt: endOfDay,
+          },
+        },
+      },
+      {
+        $addFields: {
+          scheduleLookupId: {
+            $cond: [
+              { $eq: [{ $type: '$scheduleId' }, 'objectId'] },
+              '$scheduleId',
+              { $toObjectId: '$scheduleId' },
+            ],
+          },
+          guardianLookupId: {
+            $cond: [
+              { $eq: [{ $type: '$guardianId' }, 'objectId'] },
+              '$guardianId',
+              { $toObjectId: '$guardianId' },
+            ],
+          },
+        },
+      },
+      {
+        $lookup: {
+          from: 'schedules',
+          localField: 'scheduleLookupId',
+          foreignField: '_id',
+          as: 'schedule',
+        },
+      },
+      { $unwind: '$schedule' },
+      {
+        $lookup: {
+          from: 'guardians',
+          localField: 'guardianLookupId',
+          foreignField: '_id',
+          as: 'guardian',
+        },
+      },
+      { $unwind: '$guardian' },
+      {
+        $addFields: {
+          participants: {
+            $concatArrays: [
+              {
+                $cond: [
+                  '$guardianParticipates',
+                  [{ name: '$guardian.name', rut: '$guardian.rut', type: 'tutor' }],
+                  [],
+                ],
+              },
+              {
+                $map: {
+                  input: { $ifNull: ['$attendingDependents', []] },
+                  as: 'dep',
+                  in: {
+                    name: '$$dep.name',
+                    rut: '$$dep.rut',
+                    type: 'acompañante',
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+      { $unwind: '$participants' },
+      {
+        $addFields: {
+          matchedShoe: {
+            $arrayElemAt: [
+              {
+                $filter: {
+                  input: { $ifNull: ['$metadata.patines', []] },
+                  as: 'p',
+                  cond: { $eq: ['$$p.rut', '$participants.rut'] },
+                },
+              },
+              0,
+            ],
+          },
+        },
+      },
+      {
+        $facet: {
+          porHorario: [
+            {
+              $group: {
+                _id: '$schedule.startTime',
+                startTime: { $first: '$schedule.startTime' },
+                durationMinutes: { $first: '$schedule.durationMinutes' },
+                personas: {
+                  $push: {
+                    nombre: '$participants.name',
+                    rut: '$participants.rut',
+                    tallaZapato: { $ifNull: ['$matchedShoe.shoeSize', 'N/A'] },
+                    tipo: '$participants.type',
+                  },
+                },
+                tallasUsadas: { $push: '$matchedShoe.shoeSize' },
+              },
+            },
+            {
+              $addFields: {
+                tallasFiltered: {
+                  $filter: {
+                    input: '$tallasUsadas',
+                    as: 't',
+                    cond: { $ne: ['$$t', null] },
+                  },
+                },
+              },
+            },
+            { $unwind: { path: '$tallasFiltered', preserveNullAndEmptyArrays: true } },
+            {
+              $group: {
+                _id: { startTime: '$_id', talla: '$tallasFiltered' },
+                startTime: { $first: '$startTime' },
+                durationMinutes: { $first: '$durationMinutes' },
+                personas: { $first: '$personas' },
+                cantidadTalla: { $sum: 1 },
+              },
+            },
+            { $sort: { '_id.startTime': 1, '_id.talla': 1 } },
+            {
+              $group: {
+                _id: '$_id.startTime',
+                startTime: { $first: '$startTime' },
+                durationMinutes: { $first: '$durationMinutes' },
+                personas: { $first: '$personas' },
+                resumenTallas: {
+                  $push: {
+                    $cond: [
+                      { $ne: ['$_id.talla', null] },
+                      { talla: '$_id.talla', cantidad: '$cantidadTalla' },
+                      '$$REMOVE',
+                    ],
+                  },
+                },
+              },
+            },
+            { $sort: { startTime: 1 } },
+            {
+              $project: {
+                _id: 0,
+                horario: '$startTime',
+                duracionMinutos: '$durationMinutes',
+                totalPersonas: { $size: '$personas' },
+                personas: 1,
+                resumenTallas: 1,
+              },
+            },
+          ],
+          resumenGeneral: [
+            {
+              $group: {
+                _id: null,
+                totalPersonas: { $sum: 1 },
+                tallas: { $push: '$matchedShoe.shoeSize' },
+              },
+            },
+            {
+              $addFields: {
+                tallasFiltered: {
+                  $filter: {
+                    input: '$tallas',
+                    as: 't',
+                    cond: { $ne: ['$$t', null] },
+                  },
+                },
+              },
+            },
+            { $unwind: { path: '$tallasFiltered', preserveNullAndEmptyArrays: false } },
+            {
+              $group: {
+                _id: '$tallasFiltered',
+                totalPersonas: { $first: '$totalPersonas' },
+                cantidad: { $sum: 1 },
+              },
+            },
+            { $sort: { _id: 1 } },
+            {
+              $group: {
+                _id: null,
+                totalPersonas: { $first: '$totalPersonas' },
+                resumenTallasGeneral: {
+                  $push: {
+                    talla: '$_id',
+                    cantidad: '$cantidad',
+                  },
+                },
+              },
+            },
+            {
+              $project: {
+                _id: 0,
+                totalPersonasDia: '$totalPersonas',
+                resumenTallasGeneral: 1,
+              },
+            },
+          ],
+          totalGeneral: [
+            {
+              $count: 'totalPersonasDia',
+            },
+          ],
+        },
+      },
+      {
+        $project: {
+          horarios: '$porHorario',
+          resumenDelDia: {
+            totalPersonasDia: {
+              $ifNull: [{ $arrayElemAt: ['$totalGeneral.totalPersonasDia', 0] }, 0],
+            },
+            resumenTallasGeneral: {
+              $ifNull: [{ $arrayElemAt: ['$resumenGeneral.resumenTallasGeneral', 0] }, []],
+            },
+          },
+        },
+      },
+    ]);
+
+    return (
+      result ?? {
+        horarios: [],
+        resumenDelDia: {
+          totalPersonasDia: 0,
+          resumenTallasGeneral: [],
+        },
+      }
+    );
+  }
 
   async enqueueReservation(dto: CreateReservationDto, authUser?: AuthUser): Promise<{ success: boolean; message: string; jobId: string | undefined }> {
     // 1. Validaciones preliminares de seguridad
@@ -585,6 +831,16 @@ export class ReservationsService {
 
   private formatDateTime(date: Date): string {
     return getChileDateTimeLabel(date);
+  }
+
+  private getNextChileDayUtc(date: string): Date {
+    const [year, month, day] = date.split('-').map(Number);
+    const nextDay = new Date(Date.UTC(year, month - 1, day + 1));
+    const nextDayYear = nextDay.getUTCFullYear();
+    const nextDayMonth = String(nextDay.getUTCMonth() + 1).padStart(2, '0');
+    const nextDayDate = String(nextDay.getUTCDate()).padStart(2, '0');
+
+    return chileLocalDateTimeToUtc(`${nextDayYear}-${nextDayMonth}-${nextDayDate}`, '00:00');
   }
 
   findAll(authUser: AuthUser) {

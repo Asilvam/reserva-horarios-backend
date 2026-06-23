@@ -3,6 +3,7 @@ import * as express from 'express';
 import { ReservationsService } from './reservations.service';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { UpdateReservationDto } from './dto/update-reservation.dto';
+import { GetPatinesDaySummaryDto } from './dto/get-patines-day-summary.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -55,6 +56,13 @@ export class ReservationsController {
   @Roles(Role.Admin, Role.Guardian)
   findAll(@Req() req: RequestWithUser) {
     return this.reservationsService.findAll(req.user);
+  }
+
+  @Get('patines/day-summary')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin)
+  getPatinesDaySummary(@Query() query: GetPatinesDaySummaryDto) {
+    return this.reservationsService.getPatinesDaySummary(query.date);
   }
 
   @Get(':id')
