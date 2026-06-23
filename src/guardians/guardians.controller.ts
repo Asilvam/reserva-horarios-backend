@@ -20,6 +20,16 @@ export class GuardiansController {
     return this.guardiansService.findByRut(rut);
   }
 
+  @Get('check-email/:email')
+  checkEmailAvailability(@Param('email') email: string) {
+    return this.guardiansService.checkEmailAvailability(email);
+  }
+
+  @Get('check-phone/:phone')
+  checkPhoneAvailability(@Param('phone') phone: string) {
+    return this.guardiansService.checkPhoneAvailability(phone);
+  }
+
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin, Role.Guardian)

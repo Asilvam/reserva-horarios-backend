@@ -11,7 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { Role } from '../auth/enums/role.enum';
 import { MailService } from '../mail/mail.service';
-import { getChileDateTimeLabel, getChileStartOfDayUtc } from '../common/datetime/chile-time.util';
+import { chileLocalDateTimeToUtc, getChileDateTimeLabel, getChileStartOfDayUtc } from '../common/datetime/chile-time.util';
 import { WspMetaService } from '../wsp-meta/wsp-meta.service';
 import { SchedulesGateway } from '../schedules/schedules.gateway';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -36,6 +36,252 @@ export class ReservationsService {
     private schedulesGateway: SchedulesGateway,
     private configService: ConfigService,
   ) {}
+
+  async getPatinesDaySummary(date: string) {
+    const startOfDay = chileLocalDateTimeToUtc(date, '00:00');
+    const endOfDay = this.getNextChileDayUtc(date);
+
+    const [result] = await this.reservationModel.aggregate([
+      {
+        $match: {
+          eventType: 'patines',
+          state_reserve: true,
+          checkMail: true,
+          reservationDay: {
+            $gte: startOfDay,
+            $lt: endOfDay,
+          },
+        },
+      },
+      {
+        $addFields: {
+          scheduleLookupId: {
+            $cond: [
+              { $eq: [{ $type: '$scheduleId' }, 'objectId'] },
+              '$scheduleId',
+              { $toObjectId: '$scheduleId' },
+            ],
+          },
+          guardianLookupId: {
+            $cond: [
+              { $eq: [{ $type: '$guardianId' }, 'objectId'] },
+              '$guardianId',
+              { $toObjectId: '$guardianId' },
+            ],
+          },
+        },
+      },
+      {
+        $lookup: {
+          from: 'schedules',
+          localField: 'scheduleLookupId',
+          foreignField: '_id',
+          as: 'schedule',
+        },
+      },
+      { $unwind: '$schedule' },
+      {
+        $lookup: {
+          from: 'guardians',
+          localField: 'guardianLookupId',
+          foreignField: '_id',
+          as: 'guardian',
+        },
+      },
+      { $unwind: '$guardian' },
+      {
+        $addFields: {
+          participants: {
+            $concatArrays: [
+              {
+                $cond: [
+                  '$guardianParticipates',
+                  [{ name: '$guardian.name', rut: '$guardian.rut', type: 'tutor' }],
+                  [],
+                ],
+              },
+              {
+                $map: {
+                  input: { $ifNull: ['$attendingDependents', []] },
+                  as: 'dep',
+                  in: {
+                    name: '$$dep.name',
+                    rut: '$$dep.rut',
+                    type: 'acompañante',
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+      { $unwind: '$participants' },
+      {
+        $addFields: {
+          matchedShoe: {
+            $arrayElemAt: [
+              {
+                $filter: {
+                  input: { $ifNull: ['$metadata.patines', []] },
+                  as: 'p',
+                  cond: { $eq: ['$$p.rut', '$participants.rut'] },
+                },
+              },
+              0,
+            ],
+          },
+        },
+      },
+      {
+        $facet: {
+          porHorario: [
+            {
+              $group: {
+                _id: '$schedule.startTime',
+                startTime: { $first: '$schedule.startTime' },
+                durationMinutes: { $first: '$schedule.durationMinutes' },
+                personas: {
+                  $push: {
+                    nombre: '$participants.name',
+                    rut: '$participants.rut',
+                    tallaZapato: { $ifNull: ['$matchedShoe.shoeSize', 'N/A'] },
+                    tipo: '$participants.type',
+                  },
+                },
+                tallasUsadas: { $push: '$matchedShoe.shoeSize' },
+              },
+            },
+            {
+              $addFields: {
+                tallasFiltered: {
+                  $filter: {
+                    input: '$tallasUsadas',
+                    as: 't',
+                    cond: { $ne: ['$$t', null] },
+                  },
+                },
+              },
+            },
+            { $unwind: { path: '$tallasFiltered', preserveNullAndEmptyArrays: true } },
+            {
+              $group: {
+                _id: { startTime: '$_id', talla: '$tallasFiltered' },
+                startTime: { $first: '$startTime' },
+                durationMinutes: { $first: '$durationMinutes' },
+                personas: { $first: '$personas' },
+                cantidadTalla: { $sum: 1 },
+              },
+            },
+            { $sort: { '_id.startTime': 1, '_id.talla': 1 } },
+            {
+              $group: {
+                _id: '$_id.startTime',
+                startTime: { $first: '$startTime' },
+                durationMinutes: { $first: '$durationMinutes' },
+                personas: { $first: '$personas' },
+                resumenTallas: {
+                  $push: {
+                    $cond: [
+                      { $ne: ['$_id.talla', null] },
+                      { talla: '$_id.talla', cantidad: '$cantidadTalla' },
+                      '$$REMOVE',
+                    ],
+                  },
+                },
+              },
+            },
+            { $sort: { startTime: 1 } },
+            {
+              $project: {
+                _id: 0,
+                horario: '$startTime',
+                duracionMinutos: '$durationMinutes',
+                totalPersonas: { $size: '$personas' },
+                personas: 1,
+                resumenTallas: 1,
+              },
+            },
+          ],
+          resumenGeneral: [
+            {
+              $group: {
+                _id: null,
+                totalPersonas: { $sum: 1 },
+                tallas: { $push: '$matchedShoe.shoeSize' },
+              },
+            },
+            {
+              $addFields: {
+                tallasFiltered: {
+                  $filter: {
+                    input: '$tallas',
+                    as: 't',
+                    cond: { $ne: ['$$t', null] },
+                  },
+                },
+              },
+            },
+            { $unwind: { path: '$tallasFiltered', preserveNullAndEmptyArrays: false } },
+            {
+              $group: {
+                _id: '$tallasFiltered',
+                totalPersonas: { $first: '$totalPersonas' },
+                cantidad: { $sum: 1 },
+              },
+            },
+            { $sort: { _id: 1 } },
+            {
+              $group: {
+                _id: null,
+                totalPersonas: { $first: '$totalPersonas' },
+                resumenTallasGeneral: {
+                  $push: {
+                    talla: '$_id',
+                    cantidad: '$cantidad',
+                  },
+                },
+              },
+            },
+            {
+              $project: {
+                _id: 0,
+                totalPersonasDia: '$totalPersonas',
+                resumenTallasGeneral: 1,
+              },
+            },
+          ],
+          totalGeneral: [
+            {
+              $count: 'totalPersonasDia',
+            },
+          ],
+        },
+      },
+      {
+        $project: {
+          horarios: '$porHorario',
+          resumenDelDia: {
+            totalPersonasDia: {
+              $ifNull: [{ $arrayElemAt: ['$totalGeneral.totalPersonasDia', 0] }, 0],
+            },
+            resumenTallasGeneral: {
+              $ifNull: [{ $arrayElemAt: ['$resumenGeneral.resumenTallasGeneral', 0] }, []],
+            },
+          },
+        },
+      },
+    ]);
+
+    return (
+      result ?? {
+        horarios: [],
+        resumenDelDia: {
+          totalPersonasDia: 0,
+          resumenTallasGeneral: [],
+        },
+      }
+    );
+  }
 
   async enqueueReservation(dto: CreateReservationDto, authUser?: AuthUser): Promise<{ success: boolean; message: string; jobId: string | undefined }> {
     // 1. Validaciones preliminares de seguridad
@@ -81,7 +327,7 @@ export class ReservationsService {
     const guardian = await this.guardiansService.findById(dto.guardianId);
 
     // 5. Validar si ya existe reserva activa o concluida para el evento específico en el historial
-    
+
     // A. Validación del tutor como creador de reserva (Límite existente)
     const guardianIdStr = dto.guardianId.toString();
     let guardianIdObj: any = null;
@@ -98,7 +344,9 @@ export class ReservationsService {
 
     if (existingReservation) {
       this.logger.warn(`Conflicto al encolar: El inscrito ${dto.guardianId} ya tiene una reserva activa o concluida para el evento ${schedule.eventType}.`);
-      throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+      throw new ConflictException(
+        'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+      );
     }
 
     // B. Validación: ¿El tutor (si participa) ya está registrado como ACOMPAÑANTE en otra reserva?
@@ -111,7 +359,9 @@ export class ReservationsService {
 
       if (tutorRegisteredAsDependent) {
         this.logger.warn(`Conflicto al encolar: El tutor ${guardian.rut} ya participa como acompañante en otra reserva.`);
-        throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+        throw new ConflictException(
+          'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+        );
       }
     }
 
@@ -127,7 +377,9 @@ export class ReservationsService {
       if (duplicateDependentReservation) {
         const duplicateRut = duplicateDependentReservation.attendingDependents.map((d) => d.rut).find((rut) => attendingRuts.includes(rut));
         this.logger.warn(`Conflicto al encolar: El acompañante con RUT ${duplicateRut} ya tiene una reserva activa o concluida para el evento ${schedule.eventType}.`);
-        throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+        throw new ConflictException(
+          'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+        );
       }
 
       // D. Validación: ¿Alguno de los acompañantes ya está registrado como TUTOR en otra reserva?
@@ -135,7 +387,7 @@ export class ReservationsService {
       const dependentGuardianIds = matchingGuardians.map((g) => g._id);
 
       if (dependentGuardianIds.length > 0) {
-        const dependentGuardianIdVariants = dependentGuardianIds.flatMap(id => [id, id.toString()]);
+        const dependentGuardianIdVariants = dependentGuardianIds.flatMap((id) => [id, id.toString()]);
         const duplicateGuardianReservation = await this.reservationModel.collection.findOne({
           eventType: schedule.eventType,
           state_reserve: true,
@@ -144,11 +396,12 @@ export class ReservationsService {
 
         if (duplicateGuardianReservation) {
           this.logger.warn(`Conflicto al encolar: Uno de los acompañantes ya es tutor y tiene una reserva activa.`);
-          throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+          throw new ConflictException(
+            'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+          );
         }
       }
     }
-
 
     const jobName = 'process-single-reservation';
 
@@ -301,12 +554,14 @@ export class ReservationsService {
             eventType: scheduleInTx.eventType,
             state_reserve: true,
           },
-          { session }
+          { session },
         );
 
         if (existingReservation) {
           this.logger.warn(`Conflicto: El inscrito ${guardianId} ya tiene una reserva activa o concluida para el evento ${scheduleInTx.eventType}.`);
-          throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+          throw new ConflictException(
+            'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+          );
         }
 
         // B. Validación: ¿El tutor (si participa) ya está registrado como ACOMPAÑANTE en otra reserva?
@@ -321,7 +576,9 @@ export class ReservationsService {
 
           if (tutorRegisteredAsDependent) {
             this.logger.warn(`Conflicto: El tutor ${guardian.rut} ya participa como acompañante en otra reserva.`);
-            throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+            throw new ConflictException(
+              'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+            );
           }
         }
 
@@ -339,7 +596,9 @@ export class ReservationsService {
           if (duplicateDependentReservation) {
             const duplicateRut = duplicateDependentReservation.attendingDependents.map((d) => d.rut).find((rut) => attendingRuts.includes(rut));
             this.logger.warn(`Conflicto: El acompañante con RUT ${duplicateRut} ya tiene una reserva activa o concluida para el evento ${scheduleInTx.eventType}.`);
-            throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+            throw new ConflictException(
+              'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+            );
           }
 
           // D. Validación: ¿Alguno de los acompañantes ya está registrado como TUTOR en otra reserva?
@@ -347,23 +606,24 @@ export class ReservationsService {
           const dependentGuardianIds = matchingGuardians.map((g) => g._id);
 
           if (dependentGuardianIds.length > 0) {
-            const dependentGuardianIdVariants = dependentGuardianIds.flatMap(id => [id, id.toString()]);
+            const dependentGuardianIdVariants = dependentGuardianIds.flatMap((id) => [id, id.toString()]);
             const duplicateGuardianReservation = await this.reservationModel.collection.findOne(
               {
                 eventType: scheduleInTx.eventType,
                 state_reserve: true,
                 guardianId: { $in: dependentGuardianIdVariants },
               },
-              { session }
+              { session },
             );
 
             if (duplicateGuardianReservation) {
               this.logger.warn(`Conflicto: Uno de los acompañantes ya es tutor y tiene una reserva activa.`);
-              throw new ConflictException('Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.');
+              throw new ConflictException(
+                'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
+              );
             }
           }
         }
-
 
         const updatedScheduleInTx = await this.scheduleModel.findOneAndUpdate(
           {
@@ -430,13 +690,13 @@ export class ReservationsService {
     this.logger.log(`Reserva creada exitosamente: reservationId=${finalReservation._id}`);
     await this.sendReservationConfirmationNotifications(guardian, finalReservationStartTime, dto.attendingDependents, finalReservation._id.toString(), finalReservation.eventType);
 
-    // Programar la expiración automática en 30 minutos con reintentos para alta concurrencia
+    // Programar la expiración automática en 5 minutos con reintentos para alta concurrencia
     try {
       await this.reservationQueue.add(
         'expire-reservation',
         { reservationId: finalReservation._id.toString() },
         {
-          delay: 5 * 60 * 1000, // 30 minutos (1800000 ms)
+          delay: 5 * 60 * 1000, // 5 minutos (300000 ms)
           attempts: 3, // Intentar hasta 3 veces si falla por WriteConflict
           backoff: {
             type: 'exponential',
@@ -491,7 +751,7 @@ export class ReservationsService {
     const guardianIds = matchingGuardians.map((g) => g._id);
 
     if (guardianIds.length > 0) {
-      const guardianIdVariants = guardianIds.flatMap(id => [id, id.toString()]);
+      const guardianIdVariants = guardianIds.flatMap((id) => [id, id.toString()]);
       const guardianExists = await this.reservationModel.collection.findOne({
         eventType,
         state_reserve: true,
@@ -571,6 +831,16 @@ export class ReservationsService {
 
   private formatDateTime(date: Date): string {
     return getChileDateTimeLabel(date);
+  }
+
+  private getNextChileDayUtc(date: string): Date {
+    const [year, month, day] = date.split('-').map(Number);
+    const nextDay = new Date(Date.UTC(year, month - 1, day + 1));
+    const nextDayYear = nextDay.getUTCFullYear();
+    const nextDayMonth = String(nextDay.getUTCMonth() + 1).padStart(2, '0');
+    const nextDayDate = String(nextDay.getUTCDate()).padStart(2, '0');
+
+    return chileLocalDateTimeToUtc(`${nextDayYear}-${nextDayMonth}-${nextDayDate}`, '00:00');
   }
 
   findAll(authUser: AuthUser) {
@@ -1195,32 +1465,43 @@ export class ReservationsService {
         </html>
       `;
     } catch (error: any) {
-      if (error.status === 409 || error.message?.includes('anteriormente por correo')) {
+      if (error.status === 409 || error.message?.includes('anteriormente')) {
+        const isExpired = error.message?.includes('expiró');
+        const title = isExpired ? 'Reserva Expirada' : 'Reserva Ya Gestionada';
+        const headerColor = isExpired ? '#dc2626' : '#d97706';
+        const iconColor = isExpired ? '#dc2626' : '#d97706';
+        const boxBackground = isExpired ? '#fef2f2' : '#fffbeb';
+        const boxBorder = isExpired ? '#fecaca' : '#fef3c7';
+        const boxText = isExpired ? '#991b1b' : '#b45309';
+        const introText = isExpired
+          ? 'El tiempo de confirmación ya venció y esta reserva no puede confirmarse.'
+          : 'Esta invitación ya fue respondida previamente.';
+
         return `
           <!DOCTYPE html>
           <html>
             <head>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Reserva Ya Gestionada</title>
+              <title>${title}</title>
               <style>
                 body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
                 .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
-                .header { background: #d97706; color: white; padding: 24px; }
+                .header { background: ${headerColor}; color: white; padding: 24px; }
                 .header h1 { margin: 0; font-size: 22px; }
                 .content { padding: 30px; }
-                .icon { font-size: 48px; color: #d97706; margin-bottom: 16px; }
-                .warning-box { background-color: #fffbeb; border: 1px solid #fef3c7; color: #b45309; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; line-height: 1.5; text-align: left; }
+                .icon { font-size: 48px; color: ${iconColor}; margin-bottom: 16px; }
+                .warning-box { background-color: ${boxBackground}; border: 1px solid ${boxBorder}; color: ${boxText}; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; line-height: 1.5; text-align: left; }
               </style>
             </head>
             <body>
               <div class="card">
                 <div class="header">
-                  <h1>Reserva Ya Gestionada</h1>
+                  <h1>${title}</h1>
                 </div>
                 <div class="content">
                   <div class="icon">⚠</div>
-                  <p style="font-size: 16px; line-height: 1.5; color: #334155;">Esta invitación ya ha sido respondida previamente.</p>
+                  <p style="font-size: 16px; line-height: 1.5; color: #334155;">${introText}</p>
                   <div class="warning-box">
                     <strong>Detalle:</strong><br/>
                     ${error.message}
@@ -1303,32 +1584,43 @@ export class ReservationsService {
         </html>
       `;
     } catch (error: any) {
-      if (error.status === 409 || error.message?.includes('anteriormente por correo')) {
+      if (error.status === 409 || error.message?.includes('anteriormente') || error.message?.includes('expiró')) {
+        const isExpired = error.message?.includes('expiró');
+        const title = isExpired ? 'Reserva Expirada' : 'Reserva Ya Gestionada';
+        const headerColor = isExpired ? '#dc2626' : '#d97706';
+        const iconColor = isExpired ? '#dc2626' : '#d97706';
+        const boxBackground = isExpired ? '#fef2f2' : '#fffbeb';
+        const boxBorder = isExpired ? '#fecaca' : '#fef3c7';
+        const boxText = isExpired ? '#991b1b' : '#b45309';
+        const introText = isExpired
+          ? 'El tiempo para gestionar esta reserva ya venció y los cupos fueron liberados.'
+          : 'Esta invitación ya fue respondida previamente.';
+
         return `
           <!DOCTYPE html>
           <html>
             <head>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Reserva Ya Gestionada</title>
+              <title>${title}</title>
               <style>
                 body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
                 .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
-                .header { background: #d97706; color: white; padding: 24px; }
+                .header { background: ${headerColor}; color: white; padding: 24px; }
                 .header h1 { margin: 0; font-size: 22px; }
                 .content { padding: 30px; }
-                .icon { font-size: 48px; color: #d97706; margin-bottom: 16px; }
-                .warning-box { background-color: #fffbeb; border: 1px solid #fef3c7; color: #b45309; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; line-height: 1.5; text-align: left; }
+                .icon { font-size: 48px; color: ${iconColor}; margin-bottom: 16px; }
+                .warning-box { background-color: ${boxBackground}; border: 1px solid ${boxBorder}; color: ${boxText}; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; line-height: 1.5; text-align: left; }
               </style>
             </head>
             <body>
               <div class="card">
                 <div class="header">
-                  <h1>Reserva Ya Gestionada</h1>
+                  <h1>${title}</h1>
                 </div>
                 <div class="content">
                   <div class="icon">⚠</div>
-                  <p style="font-size: 16px; line-height: 1.5; color: #334155;">Esta invitación ya ha sido respondida previamente.</p>
+                  <p style="font-size: 16px; line-height: 1.5; color: #334155;">${introText}</p>
                   <div class="warning-box">
                     <strong>Detalle:</strong><br/>
                     ${error.message}
@@ -1402,8 +1694,12 @@ export class ReservationsService {
       throw new NotFoundException('Reserva no encontrada');
     }
 
-    if (reservation.checkMail !== null && reservation.checkMail !== undefined) {
-      throw new ConflictException(`Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} pues expiro.`);
+    if (reservation.checkMail === true) {
+      throw new ConflictException('Esta reserva ya fue confirmada anteriormente.');
+    }
+
+    if (reservation.checkMail === false) {
+      throw new ConflictException('Esta reserva expiró por falta de confirmación dentro de 5 minutos y los cupos ya fueron liberados.');
     }
 
     if (!reservation.state_reserve) {
@@ -1438,8 +1734,12 @@ export class ReservationsService {
           throw new NotFoundException('Reserva no encontrada');
         }
 
-        if (reservation.checkMail !== null && reservation.checkMail !== undefined) {
-          throw new ConflictException(`Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} anteriormente por correo.`);
+        if (reservation.checkMail === true) {
+          throw new ConflictException('Esta reserva ya fue confirmada anteriormente y no puede cancelarse por correo.');
+        }
+
+        if (reservation.checkMail === false) {
+          throw new ConflictException('Esta reserva ya expiró por falta de confirmación dentro de 5 minutos y sus cupos ya fueron liberados.');
         }
 
         if (!reservation.state_reserve) {
