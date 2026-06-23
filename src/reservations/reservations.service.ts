@@ -696,7 +696,7 @@ export class ReservationsService {
         'expire-reservation',
         { reservationId: finalReservation._id.toString() },
         {
-          delay: 5 * 60 * 1000, // 30 minutos (1800000 ms)
+          delay: 5 * 60 * 1000, // 5 minutos (300000 ms)
           attempts: 3, // Intentar hasta 3 veces si falla por WriteConflict
           backoff: {
             type: 'exponential',
@@ -1465,32 +1465,43 @@ export class ReservationsService {
         </html>
       `;
     } catch (error: any) {
-      if (error.status === 409 || error.message?.includes('anteriormente por correo')) {
+      if (error.status === 409 || error.message?.includes('anteriormente')) {
+        const isExpired = error.message?.includes('expiró');
+        const title = isExpired ? 'Reserva Expirada' : 'Reserva Ya Gestionada';
+        const headerColor = isExpired ? '#dc2626' : '#d97706';
+        const iconColor = isExpired ? '#dc2626' : '#d97706';
+        const boxBackground = isExpired ? '#fef2f2' : '#fffbeb';
+        const boxBorder = isExpired ? '#fecaca' : '#fef3c7';
+        const boxText = isExpired ? '#991b1b' : '#b45309';
+        const introText = isExpired
+          ? 'El tiempo de confirmación ya venció y esta reserva no puede confirmarse.'
+          : 'Esta invitación ya fue respondida previamente.';
+
         return `
           <!DOCTYPE html>
           <html>
             <head>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Reserva Ya Gestionada</title>
+              <title>${title}</title>
               <style>
                 body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
                 .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
-                .header { background: #d97706; color: white; padding: 24px; }
+                .header { background: ${headerColor}; color: white; padding: 24px; }
                 .header h1 { margin: 0; font-size: 22px; }
                 .content { padding: 30px; }
-                .icon { font-size: 48px; color: #d97706; margin-bottom: 16px; }
-                .warning-box { background-color: #fffbeb; border: 1px solid #fef3c7; color: #b45309; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; line-height: 1.5; text-align: left; }
+                .icon { font-size: 48px; color: ${iconColor}; margin-bottom: 16px; }
+                .warning-box { background-color: ${boxBackground}; border: 1px solid ${boxBorder}; color: ${boxText}; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; line-height: 1.5; text-align: left; }
               </style>
             </head>
             <body>
               <div class="card">
                 <div class="header">
-                  <h1>Reserva Ya Gestionada</h1>
+                  <h1>${title}</h1>
                 </div>
                 <div class="content">
                   <div class="icon">⚠</div>
-                  <p style="font-size: 16px; line-height: 1.5; color: #334155;">Esta invitación ya ha sido respondida previamente.</p>
+                  <p style="font-size: 16px; line-height: 1.5; color: #334155;">${introText}</p>
                   <div class="warning-box">
                     <strong>Detalle:</strong><br/>
                     ${error.message}
@@ -1573,32 +1584,43 @@ export class ReservationsService {
         </html>
       `;
     } catch (error: any) {
-      if (error.status === 409 || error.message?.includes('anteriormente por correo')) {
+      if (error.status === 409 || error.message?.includes('anteriormente') || error.message?.includes('expiró')) {
+        const isExpired = error.message?.includes('expiró');
+        const title = isExpired ? 'Reserva Expirada' : 'Reserva Ya Gestionada';
+        const headerColor = isExpired ? '#dc2626' : '#d97706';
+        const iconColor = isExpired ? '#dc2626' : '#d97706';
+        const boxBackground = isExpired ? '#fef2f2' : '#fffbeb';
+        const boxBorder = isExpired ? '#fecaca' : '#fef3c7';
+        const boxText = isExpired ? '#991b1b' : '#b45309';
+        const introText = isExpired
+          ? 'El tiempo para gestionar esta reserva ya venció y los cupos fueron liberados.'
+          : 'Esta invitación ya fue respondida previamente.';
+
         return `
           <!DOCTYPE html>
           <html>
             <head>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Reserva Ya Gestionada</title>
+              <title>${title}</title>
               <style>
                 body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
                 .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); width: 100%; max-width: 480px; overflow: hidden; text-align: center; }
-                .header { background: #d97706; color: white; padding: 24px; }
+                .header { background: ${headerColor}; color: white; padding: 24px; }
                 .header h1 { margin: 0; font-size: 22px; }
                 .content { padding: 30px; }
-                .icon { font-size: 48px; color: #d97706; margin-bottom: 16px; }
-                .warning-box { background-color: #fffbeb; border: 1px solid #fef3c7; color: #b45309; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; line-height: 1.5; text-align: left; }
+                .icon { font-size: 48px; color: ${iconColor}; margin-bottom: 16px; }
+                .warning-box { background-color: ${boxBackground}; border: 1px solid ${boxBorder}; color: ${boxText}; border-radius: 8px; padding: 16px; margin: 10px 0; font-size: 15px; line-height: 1.5; text-align: left; }
               </style>
             </head>
             <body>
               <div class="card">
                 <div class="header">
-                  <h1>Reserva Ya Gestionada</h1>
+                  <h1>${title}</h1>
                 </div>
                 <div class="content">
                   <div class="icon">⚠</div>
-                  <p style="font-size: 16px; line-height: 1.5; color: #334155;">Esta invitación ya ha sido respondida previamente.</p>
+                  <p style="font-size: 16px; line-height: 1.5; color: #334155;">${introText}</p>
                   <div class="warning-box">
                     <strong>Detalle:</strong><br/>
                     ${error.message}
@@ -1672,8 +1694,12 @@ export class ReservationsService {
       throw new NotFoundException('Reserva no encontrada');
     }
 
-    if (reservation.checkMail !== null && reservation.checkMail !== undefined) {
-      throw new ConflictException(`Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} pues expiro, 5 minutos.`);
+    if (reservation.checkMail === true) {
+      throw new ConflictException('Esta reserva ya fue confirmada anteriormente.');
+    }
+
+    if (reservation.checkMail === false) {
+      throw new ConflictException('Esta reserva expiró por falta de confirmación dentro de 5 minutos y los cupos ya fueron liberados.');
     }
 
     if (!reservation.state_reserve) {
@@ -1708,8 +1734,12 @@ export class ReservationsService {
           throw new NotFoundException('Reserva no encontrada');
         }
 
-        if (reservation.checkMail !== null && reservation.checkMail !== undefined) {
-          throw new ConflictException(`Esta reserva ya fue ${reservation.checkMail ? 'confirmada' : 'cancelada'} anteriormente por correo.`);
+        if (reservation.checkMail === true) {
+          throw new ConflictException('Esta reserva ya fue confirmada anteriormente y no puede cancelarse por correo.');
+        }
+
+        if (reservation.checkMail === false) {
+          throw new ConflictException('Esta reserva ya expiró por falta de confirmación dentro de 5 minutos y sus cupos ya fueron liberados.');
         }
 
         if (!reservation.state_reserve) {
