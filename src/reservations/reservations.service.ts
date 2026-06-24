@@ -16,15 +16,32 @@ import { WspMetaService } from '../wsp-meta/wsp-meta.service';
 import { SchedulesGateway } from '../schedules/schedules.gateway';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { RedisService } from '../common/redis/redis.service';
+import { PrecheckReservationDto } from './dto/precheck-reservation.dto';
 
 export type ReservationQueuePayload = {
   dto: CreateReservationDto;
   authUser?: AuthUser;
 };
 
+type PrecheckResult = {
+  rutRegisteredByValue: Record<string, boolean>;
+  emailAvailable: boolean;
+  phoneAvailable: boolean;
+  source: 'redis' | 'mongo-fallback';
+};
+
+type ReservationIdentityPayload = {
+  eventType: string;
+  ruts: string[];
+  email?: string;
+  phone?: string;
+};
+
 @Injectable()
 export class ReservationsService {
   private readonly logger = new Logger(ReservationsService.name);
+  private readonly rutCountKeyPrefix = 'event';
 
   constructor(
     @InjectModel(Reservation.name) private reservationModel: Model<Reservation>,
@@ -35,7 +52,405 @@ export class ReservationsService {
     private wspMetaService: WspMetaService,
     private schedulesGateway: SchedulesGateway,
     private configService: ConfigService,
+    private redisService: RedisService,
   ) {}
+
+  private getRutCountKey(eventType: string): string {
+    return `${this.rutCountKeyPrefix}:${eventType}:rut-count`;
+  }
+
+  private getEmailCountKey(eventType: string): string {
+    return `${this.rutCountKeyPrefix}:${eventType}:email-count`;
+  }
+
+  private getPhoneCountKey(eventType: string): string {
+    return `${this.rutCountKeyPrefix}:${eventType}:phone-count`;
+  }
+
+  private maskRut(rut: string): string {
+    if (!rut) return '***';
+    if (rut.length <= 4) return `***${rut}`;
+    return `${rut.slice(0, 2)}***${rut.slice(-2)}`;
+  }
+
+  private maskEmail(email: string): string {
+    if (!email) return '***';
+    const [name, domain] = email.split('@');
+    if (!domain) return '***';
+    const maskedName = name.length <= 2 ? `${name[0] ?? '*'}*` : `${name.slice(0, 2)}***`;
+    return `${maskedName}@${domain}`;
+  }
+
+  private maskPhone(phone: string): string {
+    if (!phone) return '***';
+    return phone.length <= 4 ? `***${phone}` : `${phone.slice(0, 3)}***${phone.slice(-2)}`;
+  }
+
+  private toNumber(value: string | null): number {
+    if (!value) return 0;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private normalizeEventType(eventType: string): string {
+    return eventType.trim().toLowerCase();
+  }
+
+  private normalizeRut(rut: string): string {
+    return rut.trim().toUpperCase();
+  }
+
+  private normalizeEmail(email: string): string {
+    return email.trim().toLowerCase();
+  }
+
+  private normalizePhone(phone: string): string {
+    return phone.trim();
+  }
+
+  private sameEntityId(a?: string | null, b?: string | null): boolean {
+    if (!a || !b) return false;
+    return a.toString() === b.toString();
+  }
+
+  private async getTutorGuardianIdFromRuts(ruts: string[]): Promise<string | null> {
+    if (!ruts || ruts.length === 0) {
+      return null;
+    }
+
+    const tutorRut = ruts[0];
+    if (!tutorRut) {
+      return null;
+    }
+
+    const guardian = await this.guardiansService.findByRut(tutorRut);
+    if (!guardian?._id) {
+      return null;
+    }
+
+    return guardian._id.toString();
+  }
+
+  private async applyGuardianOwnershipAvailability(args: {
+    tutorGuardianId: string | null;
+    email: string;
+    phone: string;
+    emailAvailable: boolean;
+    phoneAvailable: boolean;
+  }): Promise<{ emailAvailable: boolean; phoneAvailable: boolean }> {
+    let emailAvailable = args.emailAvailable;
+    let phoneAvailable = args.phoneAvailable;
+
+    if (args.email && emailAvailable) {
+      const emailOwnerId = await this.guardiansService.findIdByEmail(args.email);
+      if (emailOwnerId && !this.sameEntityId(emailOwnerId, args.tutorGuardianId)) {
+        emailAvailable = false;
+      }
+    }
+
+    if (args.phone && phoneAvailable) {
+      const phoneOwnerId = await this.guardiansService.findIdByPhone(args.phone);
+      if (phoneOwnerId && !this.sameEntityId(phoneOwnerId, args.tutorGuardianId)) {
+        phoneAvailable = false;
+      }
+    }
+
+    return { emailAvailable, phoneAvailable };
+  }
+
+  private getGuardianIdVariants(guardianId: string): Array<string | Types.ObjectId> {
+    const normalized = guardianId.toString();
+    if (!Types.ObjectId.isValid(normalized)) {
+      return [normalized];
+    }
+
+    return [normalized, new Types.ObjectId(normalized)];
+  }
+
+  private async getIdentityPayloadForReservation(
+    reservation: Pick<Reservation, 'guardianId' | 'attendingDependents' | 'eventType'>,
+  ): Promise<ReservationIdentityPayload | null> {
+    if (!reservation.eventType) {
+      return null;
+    }
+
+    const guardian = await this.guardiansService.findById(reservation.guardianId.toString());
+    const dependentRuts = (reservation.attendingDependents || []).map((dep) => dep.rut).filter(Boolean);
+
+    return {
+      eventType: reservation.eventType,
+      ruts: [guardian.rut, ...dependentRuts],
+      email: guardian.email,
+      phone: guardian.phone,
+    };
+  }
+
+  private async updateEventIdentityCounters(params: {
+    eventType: string;
+    ruts?: string[];
+    email?: string;
+    phone?: string;
+    delta: 1 | -1;
+    context: string;
+    requestId?: string;
+  }) {
+    const startedAt = Date.now();
+    const eventType = this.normalizeEventType(params.eventType);
+    const ruts = Array.from(new Set((params.ruts || []).map((r) => this.normalizeRut(r)).filter(Boolean)));
+    const email = params.email ? this.normalizeEmail(params.email) : '';
+    const phone = params.phone ? this.normalizePhone(params.phone) : '';
+
+    if (ruts.length === 0 && !email && !phone) {
+      return;
+    }
+
+    try {
+      const redis = this.redisService.getClient();
+      const pipeline = redis.multi();
+
+      const rutCountKey = this.getRutCountKey(eventType);
+      const emailCountKey = this.getEmailCountKey(eventType);
+      const phoneCountKey = this.getPhoneCountKey(eventType);
+
+      for (const rut of ruts) {
+        pipeline.hincrby(rutCountKey, rut, params.delta);
+      }
+
+      if (email) {
+        pipeline.hincrby(emailCountKey, email, params.delta);
+      }
+
+      if (phone) {
+        pipeline.hincrby(phoneCountKey, phone, params.delta);
+      }
+
+      await pipeline.exec();
+
+      if (params.delta === -1) {
+        const cleanupPipeline = redis.multi();
+        for (const rut of ruts) {
+          cleanupPipeline.hget(rutCountKey, rut);
+        }
+        if (email) {
+          cleanupPipeline.hget(emailCountKey, email);
+        }
+        if (phone) {
+          cleanupPipeline.hget(phoneCountKey, phone);
+        }
+        const cleanupValues = await cleanupPipeline.exec();
+        const deletePipeline = redis.multi();
+
+        let index = 0;
+        for (const rut of ruts) {
+          const value = cleanupValues?.[index]?.[1] as string | null;
+          if (this.toNumber(value) <= 0) {
+            deletePipeline.hdel(rutCountKey, rut);
+          }
+          index++;
+        }
+
+        if (email) {
+          const value = cleanupValues?.[index]?.[1] as string | null;
+          if (this.toNumber(value) <= 0) {
+            deletePipeline.hdel(emailCountKey, email);
+          }
+          index++;
+        }
+
+        if (phone) {
+          const value = cleanupValues?.[index]?.[1] as string | null;
+          if (this.toNumber(value) <= 0) {
+            deletePipeline.hdel(phoneCountKey, phone);
+          }
+        }
+
+        await deletePipeline.exec();
+      }
+
+      this.logger.log(
+        JSON.stringify({
+          event: 'reservation.redis.sync',
+          context: params.context,
+          requestId: params.requestId || null,
+          eventType,
+          delta: params.delta,
+          rutCount: ruts.length,
+          hasEmail: Boolean(email),
+          hasPhone: Boolean(phone),
+          durationMs: Date.now() - startedAt,
+          result: 'ok',
+        }),
+      );
+    } catch (error) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'reservation.redis.sync',
+          context: params.context,
+          requestId: params.requestId || null,
+          eventType,
+          delta: params.delta,
+          rutCount: ruts.length,
+          email: email ? this.maskEmail(email) : null,
+          phone: phone ? this.maskPhone(phone) : null,
+          durationMs: Date.now() - startedAt,
+          result: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  }
+
+  async precheckAvailability(dto: PrecheckReservationDto, requestId?: string): Promise<PrecheckResult> {
+    const startedAt = Date.now();
+    const eventType = this.normalizeEventType(dto.eventType);
+    const ruts = Array.from(new Set((dto.ruts || []).map((r) => this.normalizeRut(r)).filter(Boolean)));
+    const email = dto.email ? this.normalizeEmail(dto.email) : '';
+    const phone = dto.phone ? this.normalizePhone(dto.phone) : '';
+    const tutorGuardianId = await this.getTutorGuardianIdFromRuts(ruts);
+
+    try {
+      const redis = this.redisService.getClient();
+      const rutResult: Record<string, boolean> = {};
+      for (const rut of ruts) {
+        rutResult[rut] = false;
+      }
+
+      if (ruts.length > 0) {
+        const values = await redis.hmget(this.getRutCountKey(eventType), ...ruts);
+        for (let i = 0; i < ruts.length; i++) {
+          rutResult[ruts[i]] = this.toNumber(values[i]) > 0;
+        }
+
+        const positiveRuts = ruts.filter((rut) => rutResult[rut]);
+        if (positiveRuts.length > 0) {
+          const positiveChecks = await Promise.all(
+            positiveRuts.map(async (rut) => {
+              const dbCheck = await this.checkRutRegistration(rut, eventType);
+              return [rut, dbCheck.registered] as const;
+            }),
+          );
+
+          const cleanupPipeline = redis.multi();
+          for (const [rut, registered] of positiveChecks) {
+            if (!registered) {
+              rutResult[rut] = false;
+              cleanupPipeline.hdel(this.getRutCountKey(eventType), rut);
+            }
+          }
+          await cleanupPipeline.exec();
+        }
+
+        const unresolvedRuts = ruts.filter((rut) => !rutResult[rut]);
+        if (unresolvedRuts.length > 0) {
+          const dbChecks = await Promise.all(
+            unresolvedRuts.map(async (rut) => {
+              const dbCheck = await this.checkRutRegistration(rut, eventType);
+              return [rut, dbCheck.registered] as const;
+            }),
+          );
+
+          const backfillPipeline = redis.multi();
+          for (const [rut, registered] of dbChecks) {
+            if (!registered) continue;
+            rutResult[rut] = true;
+            backfillPipeline.hset(this.getRutCountKey(eventType), rut, '1');
+          }
+          await backfillPipeline.exec();
+        }
+      }
+
+      const ownershipAvailability = await this.applyGuardianOwnershipAvailability({
+        tutorGuardianId,
+        email,
+        phone,
+        emailAvailable: true,
+        phoneAvailable: true,
+      });
+
+      const result: PrecheckResult = {
+        rutRegisteredByValue: rutResult,
+        emailAvailable: ownershipAvailability.emailAvailable,
+        phoneAvailable: ownershipAvailability.phoneAvailable,
+        source: 'redis',
+      };
+
+      this.logger.log(
+        JSON.stringify({
+          event: 'reservation.precheck',
+          requestId: requestId || null,
+          eventType,
+          source: result.source,
+          rutCount: ruts.length,
+          email: email ? this.maskEmail(email) : null,
+          phone: phone ? this.maskPhone(phone) : null,
+          registeredCount: Object.values(result.rutRegisteredByValue).filter(Boolean).length,
+          emailAvailable: result.emailAvailable,
+          phoneAvailable: result.phoneAvailable,
+          durationMs: Date.now() - startedAt,
+          result: 'ok',
+        }),
+      );
+
+      return result;
+    } catch (redisError) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'reservation.precheck.redis_error',
+          requestId: requestId || null,
+          eventType,
+          source: 'redis',
+          rutCount: ruts.length,
+          email: email ? this.maskEmail(email) : null,
+          phone: phone ? this.maskPhone(phone) : null,
+          durationMs: Date.now() - startedAt,
+          error: redisError instanceof Error ? redisError.message : String(redisError),
+        }),
+      );
+    }
+
+    const fallbackStartedAt = Date.now();
+    const rutChecks = await Promise.all(
+      ruts.map(async (rut) => {
+        const check = await this.checkRutRegistration(rut, eventType);
+        return [rut, check.registered] as const;
+      }),
+    );
+    const rutResult = Object.fromEntries(rutChecks);
+
+    const fallbackOwnershipAvailability = await this.applyGuardianOwnershipAvailability({
+      tutorGuardianId,
+      email,
+      phone,
+      emailAvailable: true,
+      phoneAvailable: true,
+    });
+
+    const fallbackResult: PrecheckResult = {
+      rutRegisteredByValue: rutResult,
+      emailAvailable: fallbackOwnershipAvailability.emailAvailable,
+      phoneAvailable: fallbackOwnershipAvailability.phoneAvailable,
+      source: 'mongo-fallback',
+    };
+
+    this.logger.warn(
+      JSON.stringify({
+        event: 'reservation.precheck',
+        requestId: requestId || null,
+        eventType,
+        source: fallbackResult.source,
+        rutCount: ruts.length,
+        email: email ? this.maskEmail(email) : null,
+        phone: phone ? this.maskPhone(phone) : null,
+        registeredCount: Object.values(fallbackResult.rutRegisteredByValue).filter(Boolean).length,
+        emailAvailable: fallbackResult.emailAvailable,
+        phoneAvailable: fallbackResult.phoneAvailable,
+        durationMs: Date.now() - fallbackStartedAt,
+        result: 'ok',
+      }),
+    );
+
+    return fallbackResult;
+  }
 
   async getPatinesDaySummary(date: string) {
     const startOfDay = chileLocalDateTimeToUtc(date, '00:00');
@@ -688,6 +1103,14 @@ export class ReservationsService {
     this.schedulesGateway.broadcastSpotsUpdate(finalSchedule._id.toString(), finalSchedule.availableSpots);
 
     this.logger.log(`Reserva creada exitosamente: reservationId=${finalReservation._id}`);
+    await this.updateEventIdentityCounters({
+      eventType: finalReservation.eventType || '',
+      ruts: [guardian.rut, ...dto.attendingDependents.map((dep) => dep.rut)],
+      email: guardian.email,
+      phone: guardian.phone,
+      delta: 1,
+      context: 'createReservation',
+    });
     await this.sendReservationConfirmationNotifications(guardian, finalReservationStartTime, dto.attendingDependents, finalReservation._id.toString(), finalReservation.eventType);
 
     // Programar la expiración automática en 5 minutos con reintentos para alta concurrencia
@@ -890,6 +1313,7 @@ export class ReservationsService {
     const session = await this.reservationModel.db.startSession();
     let updatedScheduleAfterDelete: Schedule | null = null;
     let removedReservationScheduleId: string | null = null;
+    const removeContext: { identityPayload?: ReservationIdentityPayload } = {};
 
     try {
       await session.withTransaction(async () => {
@@ -905,6 +1329,11 @@ export class ReservationsService {
             this.logger.warn(`Guardian intentando eliminar reserva de otro inscrito (${reservation.guardianId}).`);
             throw new ForbiddenException('No puedes eliminar una reserva de otro inscrito.');
           }
+        }
+
+        const identityPayload = await this.getIdentityPayloadForReservation(reservation);
+        if (identityPayload) {
+          removeContext.identityPayload = identityPayload;
         }
 
         await this.reservationModel.findByIdAndDelete(id, { session });
@@ -928,6 +1357,17 @@ export class ReservationsService {
     }
 
     this.logger.log(`Reserva eliminada: reservationId=${id}`);
+
+    if (removeContext.identityPayload) {
+      await this.updateEventIdentityCounters({
+        eventType: removeContext.identityPayload.eventType,
+        ruts: removeContext.identityPayload.ruts,
+        email: removeContext.identityPayload.email,
+        phone: removeContext.identityPayload.phone,
+        delta: -1,
+        context: 'removeReservation',
+      });
+    }
 
     const finalUpdatedScheduleAfterDelete = updatedScheduleAfterDelete as Schedule | null;
     const finalRemovedReservationScheduleId = removedReservationScheduleId;
@@ -1725,6 +2165,7 @@ export class ReservationsService {
     const session = await this.reservationModel.db.startSession();
     let updatedScheduleAfterCancel: any = null;
     let cancelledReservation: any = null;
+    const cancelContext: { identityPayload?: ReservationIdentityPayload } = {};
 
     try {
       await session.withTransaction(async () => {
@@ -1744,6 +2185,11 @@ export class ReservationsService {
 
         if (!reservation.state_reserve) {
           throw new BadRequestException('Esta reserva ya fue cancelada.');
+        }
+
+        const identityPayload = await this.getIdentityPayloadForReservation(reservation);
+        if (identityPayload) {
+          cancelContext.identityPayload = identityPayload;
         }
 
         // Marcar la reserva como inactiva y registrar la cancelación por correo
@@ -1774,6 +2220,17 @@ export class ReservationsService {
       this.schedulesGateway.broadcastSpotsUpdate(cancelledReservation.scheduleId.toString(), updatedScheduleAfterCancel.availableSpots);
     }
 
+    if (cancelContext.identityPayload) {
+      await this.updateEventIdentityCounters({
+        eventType: cancelContext.identityPayload.eventType,
+        ruts: cancelContext.identityPayload.ruts,
+        email: cancelContext.identityPayload.email,
+        phone: cancelContext.identityPayload.phone,
+        delta: -1,
+        context: 'cancelEmail',
+      });
+    }
+
     if (!cancelledReservation) {
       throw new InternalServerErrorException('No se pudo cancelar la reserva.');
     }
@@ -1791,6 +2248,7 @@ export class ReservationsService {
     let updatedScheduleAfterExpiry: any = null;
     let expiredReservation: any = null;
     let skipReason = '';
+    const expireContext: { identityPayload?: ReservationIdentityPayload } = {};
 
     try {
       await session.withTransaction(async () => {
@@ -1811,6 +2269,11 @@ export class ReservationsService {
         if (!reservation.state_reserve) {
           skipReason = 'Reserva ya se encuentra inactiva';
           return;
+        }
+
+        const identityPayload = await this.getIdentityPayloadForReservation(reservation);
+        if (identityPayload) {
+          expireContext.identityPayload = identityPayload;
         }
 
         // Expirar la reserva: setear state_reserve = false
@@ -1848,6 +2311,16 @@ export class ReservationsService {
     if (updatedScheduleAfterExpiry && expiredReservation) {
       this.logger.log(`Reserva ${id} EXPIRADA automáticamente por falta de confirmación en 30 minutos. Cupos devueltos al scheduleId=${expiredReservation.scheduleId}. Disponibles: ${updatedScheduleAfterExpiry.availableSpots}`);
       this.schedulesGateway.broadcastSpotsUpdate(expiredReservation.scheduleId.toString(), updatedScheduleAfterExpiry.availableSpots);
+      if (expireContext.identityPayload) {
+        await this.updateEventIdentityCounters({
+          eventType: expireContext.identityPayload.eventType,
+          ruts: expireContext.identityPayload.ruts,
+          email: expireContext.identityPayload.email,
+          phone: expireContext.identityPayload.phone,
+          delta: -1,
+          context: 'expireReservation',
+        });
+      }
       return { success: true, message: 'Reserva expirada automáticamente por inactividad y cupos liberados.' };
     }
 

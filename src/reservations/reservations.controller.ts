@@ -1,10 +1,11 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Req, HttpCode, HttpStatus, Header, Res, NotFoundException, Query, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Req, HttpCode, HttpStatus, Header, Res, NotFoundException, Query, BadRequestException, Headers } from '@nestjs/common';
 import * as express from 'express';
 import { JwtService } from '@nestjs/jwt';
 import { ReservationsService } from './reservations.service';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { UpdateReservationDto } from './dto/update-reservation.dto';
 import { GetPatinesDaySummaryDto } from './dto/get-patines-day-summary.dto';
+import { PrecheckReservationDto } from './dto/precheck-reservation.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -27,6 +28,19 @@ export class ReservationsController {
       throw new BadRequestException('eventType query parameter is required');
     }
     return this.reservationsService.checkRutRegistration(rut, eventType);
+  }
+
+  @Post('precheck')
+  async precheck(
+    @Body() precheckReservationDto: PrecheckReservationDto,
+    @Headers('x-request-id') requestId?: string,
+  ) {
+    const result = await this.reservationsService.precheckAvailability(precheckReservationDto, requestId);
+    return {
+      rutRegisteredByValue: result.rutRegisteredByValue,
+      emailAvailable: result.emailAvailable,
+      phoneAvailable: result.phoneAvailable,
+    };
   }
 
   @Post()

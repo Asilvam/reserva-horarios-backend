@@ -169,6 +169,22 @@ export class GuardiansService {
     return { available: !existingGuardian };
   }
 
+  async findIdByEmail(email: string): Promise<string | null> {
+    const guardian = await this.guardianModel.findOne({ email }).select({ _id: 1 }).lean();
+    if (!guardian?._id) {
+      return null;
+    }
+    return guardian._id.toString();
+  }
+
+  async findIdByPhone(phone: string): Promise<string | null> {
+    const guardian = await this.guardianModel.findOne({ phone }).select({ _id: 1 }).lean();
+    if (!guardian?._id) {
+      return null;
+    }
+    return guardian._id.toString();
+  }
+
   async findManyByRuts(ruts: string[]): Promise<Guardian[]> {
     if (!ruts || ruts.length === 0) return [];
     const variants = new Set<string>();
