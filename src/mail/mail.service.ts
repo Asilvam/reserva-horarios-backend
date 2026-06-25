@@ -215,7 +215,7 @@ export class MailService {
       </div>
 
       <p style="font-size: 16px; font-weight: bold; color: #1e293b; text-align: center; margin-top: 30px; margin-bottom: 0;">
-        ¡Te esperamos! ${footerEmoji}
+        ¡Te esperamos! 
       </p>
     `;
 
