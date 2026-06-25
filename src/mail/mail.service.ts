@@ -104,7 +104,15 @@ export class MailService {
     });
   }
 
-  async sendReservationConfirmation(email: string, guardianName: string, scheduleDateTime: string, companions: Array<{ name: string; rut: string; age?: number }>, reservationId: string, eventType?: string) {
+  async sendReservationConfirmation(
+    email: string,
+    guardianName: string,
+    scheduleDateTime: string,
+    companions: Array<{ name: string; rut: string; age?: number }>,
+    reservationId: string,
+    qrBuffer: Buffer,
+    eventType?: string,
+  ) {
     const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
     const transporter = this.createTransport();
 
@@ -119,18 +127,21 @@ export class MailService {
     let subject = 'Confirma tu reserva - Reserva Horarios';
     let headerColor = '#007BFF'; // Azul por defecto
     let btnGradient = 'linear-gradient(135deg, #007BFF, #0056b3)'; // Gradiente azul
-    let introText = 'tu reserva en <strong>Reserva Horarios</strong>.';
+    let eventName = 'Reserva Horarios';
+    let eventEmoji = '🎟️';
 
     if (eventType === 'selva') {
       subject = 'Confirma tu reserva en Selva Viva 🦎🦜';
       headerColor = '#fc0303'; // Turquesa Selva
       btnGradient = 'linear-gradient(135deg, #10b981, #059669)'; // Verde Selva
-      introText = 'tu reserva en <strong>Selva Viva</strong>! 🦎 🦜';
+      eventName = 'Selva Viva';
+      eventEmoji = '🦎🦜';
     } else if (eventType === 'patines') {
       subject = 'Confirma tu reserva en la Pista de Hielo ❄️⛸️';
       headerColor = '#0284c7'; // Azul Hielo
       btnGradient = 'linear-gradient(135deg, #0ea5e9, #0284c7)'; // Celeste Pista
-      introText = 'tu reserva en la <strong>Pista de Hielo</strong>! ❄️  ⛸️';
+      eventName = 'la Pista de Hielo';
+      eventEmoji = '❄️⛸️';
     }
 
     const companionsHtml = companions
@@ -147,8 +158,6 @@ export class MailService {
     const companionsText = companions.map((companion) => `- ${companion.name} (${companion.rut})`).join('\n');
 
     const emailContent = `
-  
-      <!-- Banner de Urgencia (5 minutos) -->
       <div style="background-color: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; padding: 18px; margin-bottom: 25px;">
         <table style="width: 100%; border-collapse: collapse;">
           <tr>
@@ -156,11 +165,29 @@ export class MailService {
             <td style="padding: 0 0 0 15px; vertical-align: middle;">
               <p style="margin: 0; color: #b45309; font-weight: bold; font-size: 17px;">Atención</p>
               <p style="margin: 6px 0 0 0; color: #78350f; font-size: 15px; line-height: 1.6;">
-                Debes <strong>confirmar tu reserva dentro de los próximos 5 minutos</strong>. Si no la confirmas, los cupos se liberarán automáticamente.
+                Debes <strong>confirmar tu reserva dentro de los próximos 5 minutos</strong>.<br />
+                Si no la confirmas, los cupos se liberarán automáticamente.
               </p>
             </td>
           </tr>
         </table>
+      </div>
+     
+      <div style="text-align: center; margin: 8px 0 22px 0;">
+        <p style="font-size: 14px; color: #64748b; margin-bottom: 14px;">👇 Presiona el botón para confirmar:</p>
+        <a href="${baseUrl}/reservations/${reservationId}/confirm-email"
+           style="display: inline-block; min-width: 220px; padding: 14px 32px; background: ${btnGradient}; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 15px; box-shadow: 0 4px 6px rgba(14, 165, 233, 0.25);">
+           CONFIRMAR RESERVA
+        </a>
+      </div>
+
+
+
+      <div style="text-align: center; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 25px; margin-bottom: 25px;">
+        <p style="margin: 0 0 15px 0; font-weight: bold; font-size: 14px; color: #1e293b; text-transform: uppercase; letter-spacing: 0.5px;">
+          🎫 Código QR de ingreso:
+        </p>
+        <img src="cid:qrcode" alt="Código QR" style="display: inline-block; max-width: 220px; height: auto;" />
       </div>
 
       <!-- Detalles de la reserva -->
@@ -175,106 +202,7 @@ export class MailService {
           </ul>
         </div>
       </div>
-
-      <!-- Botón de Confirmación -->
-      <div style="text-align: center; margin: 30px 0 15px 0;">
-        <p style="font-size: 14px; color: #64748b; margin-bottom: 18px;">👇 Presiona el botón para confirmar:</p>
-        <a href="${baseUrl}/reservations/${reservationId}/confirm-email" 
-           style="display: inline-block; padding: 14px 32px; background: ${btnGradient}; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 15px; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.2);">
-           CONFIRMAR RESERVA
-        </a>
-        <p style="font-size: 12px; color: #94a3b8; margin-top: 18px;">
-          Una vez confirmada, recibirás el código QR de ingreso. 🎟️
-        </p>
-      </div>
-    `;
-
-    const html = this._generateModernHtmlTemplate('¡Estas a un paso de confirmar tu reserva!', emailContent, headerColor);
-
-    await transporter.sendMail({
-      from,
-      to: email,
-      subject,
-      text: `¡Estás a un paso de confirmar tu reserva! \n\nDebes confirmar tu reserva dentro de los próximos 5 minutos. Si no la confirmas, los cupos se liberarán automáticamente.\n\nFecha y hora: ${scheduleDateTime} hrs.\n\nIntegrantes:\n${companionsText || '- Sin acompañantes'}\n\nPresiona el siguiente enlace para confirmar:\n${baseUrl}/reservations/${reservationId}/confirm-email\n\nUna vez confirmada, recibirás el código QR de ingreso.`,
-      html,
-    });
-  }
-
-  async sendActiveReservationMail(email: string, guardianName: string, scheduleDateTime: string, companions: Array<{ name: string; rut: string; age?: number }>, reservationId: string, qrBuffer: Buffer, eventType?: string) {
-    const from = this.configService.get<string>('MAIL_FROM', 'no-reply@reserva-horarios.local');
-    const transporter = this.createTransport();
-
-    if (!transporter) {
-      this.logger.warn('SMTP no configurado. Correo de confirmación final de reserva omitido.');
-      return;
-    }
-
-    // Configuraciones dinámicas por tipo de evento
-    let subject = 'Confirmación de Reserva Exitosa - Reserva Horarios';
-    let headerColor = '#007BFF'; // Azul por defecto
-    let eventName = 'Reserva Horarios';
-    let eventEmoji = '🎟️';
-    let footerEmoji = '🐍🐢';
-
-    if (eventType === 'selva') {
-      subject = 'Reserva Confirmada en Selva Viva! 🦎🦜';
-      headerColor = '#0d9488'; // Turquesa Selva
-      eventName = 'Selva Viva';
-      eventEmoji = '🦎🦜';
-      footerEmoji = '🐍🐢';
-    } else if (eventType === 'patines') {
-      subject = 'Reserva Confirmada en la Pista de Hielo! ❄️⛸️';
-      headerColor = '#0284c7'; // Azul Hielo
-      eventName = 'la Pista de Hielo';
-      eventEmoji = '❄️⛸️';
-      footerEmoji = '❄️⛸️';
-    }
-
-    const displayDateTime = scheduleDateTime ? scheduleDateTime.replace(/,/g, '').replace(/-/g, '·') : '';
-
-    const companionsHtml = companions
-      .map(
-        (companion) => `
-      <li style="margin-bottom: 6px; color: #475569; font-size: 14px;">
-        <strong>${companion.name}</strong>${companion.rut ? ` (${companion.rut})` : ''}
-      </li>
-    `,
-      )
-      .join('');
-
-    const textCompanions = companions.map((companion) => `* ${companion.name}${companion.rut ? ` (${companion.rut})` : ''}`).join('\n');
-
-    const emailContent = `
-      <p style="font-size: 16px; margin-bottom: 25px; font-weight: bold; color: #1e293b; text-align: center;">
-        ¡Tu reserva para ${eventName} ha sido confirmada! ${eventEmoji}
-      </p>
-
-      <!-- Detalles de la reserva -->
-      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
-        <p style="margin: 0 0 10px 0; font-size: 14px; color: #1e293b; font-weight: bold;">
-          📅 Fecha y hora:
-        </p>
-        <p style="margin: 0 0 20px 0; font-size: 14px; color: #475569; padding-left: 10px;">
-          ${displayDateTime} hrs.
-        </p>
-        
-        <p style="margin: 0 0 10px 0; font-size: 14px; color: #1e293b; font-weight: bold;">
-          Grupo registrado:
-        </p>
-        <ul style="margin: 0; padding-left: 20px; color: #475569; font-size: 14px; line-height: 1.6;">
-          ${companionsHtml || '<li style="list-style-type: none; color: #94a3b8;">Sin acompañantes</li>'}
-        </ul>
-      </div>
-
-      <!-- Código QR de ingreso -->
-      <div style="text-align: center; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 25px; margin-bottom: 25px;">
-        <p style="margin: 0 0 15px 0; font-weight: bold; font-size: 14px; color: #1e293b; text-transform: uppercase; letter-spacing: 0.5px;">
-          🎫 Código QR de ingreso:
-        </p>
-        <img src="cid:qrcode" alt="Código QR" style="display: inline-block; max-width: 220px; height: auto;" />
-      </div>
-
-      <!-- Importante -->
+     <!-- Importante -->
       <div style="background-color: #fffbeb; border-left: 4px solid #f59e0b; border-radius: 4px; padding: 15px 20px; margin: 25px 0;">
         <p style="margin: 0 0 8px 0; font-weight: bold; font-size: 14px; color: #b45309; text-transform: uppercase; letter-spacing: 0.5px;">
           ⚠️ Importante:
@@ -291,7 +219,7 @@ export class MailService {
       </p>
     `;
 
-    const html = this._generateModernHtmlTemplate('Reserva Confirmada', emailContent, headerColor);
+    const html = this._generateModernHtmlTemplate('Confirma tu reserva', emailContent, headerColor);
 
     await transporter.sendMail({
       from,
@@ -299,17 +227,11 @@ export class MailService {
       subject,
       text:
         `¡Tu reserva para ${eventName} ha sido confirmada! ${eventEmoji}\n\n` +
-        `📅 Fecha y hora:\n` +
-        `${displayDateTime} hrs.\n\n` +
-        `Grupo registrado:\n` +
-        `${textCompanions || '* Sin acompañantes'}\n\n` +
-        `🎟️ Código QR de ingreso:\n` +
-        `(QR adjunto)\n\n` +
-        `⚠️ Importante:\n` +
-        `* Llega al menos 20 minutos antes de tu horario.\n` +
-        `* Presenta este código QR al ingresar.\n` +
-        `* Revisa las normas de uso antes de tu visita.\n\n` +
-        `¡Te esperamos! ${footerEmoji}`,
+        `Debes confirmar tu reserva dentro de los próximos 5 minutos. Si no la confirmas, los cupos se liberarán automáticamente.\n\n` +
+        `Presiona el siguiente enlace para confirmar:\n${baseUrl}/reservations/${reservationId}/confirm-email\n\n` +
+        `📅 Fecha y hora:\n${scheduleDateTime} hrs.\n\n` +
+        `Integrantes:\n${companionsText || '- Sin acompañantes'}\n\n` +
+        `🎟️ Código QR de ingreso: (QR adjunto)`,
       html,
       attachments: [
         {

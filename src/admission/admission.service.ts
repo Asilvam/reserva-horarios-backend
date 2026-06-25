@@ -38,13 +38,26 @@ export class AdmissionService {
     private readonly redisService: RedisService,
     private readonly configService: ConfigService,
   ) {
-    this.writingMaxPerEvent = Number(this.configService.get<string>('WRITING_MAX_PER_EVENT') || 200);
-    this.formTtlSec = Number(this.configService.get<string>('FORM_TTL_SEC') || 60);
-    this.retryAfterSec = Number(this.configService.get<string>('WAITLIST_RETRY_AFTER_SEC') || 5);
-    this.avgWritingSecDefault = Number(this.configService.get<string>('ETA_DEFAULT_WRITING_SEC') || 45);
-    this.waitlistMaxPerEvent = Number(this.configService.get<string>('WAITLIST_MAX_PER_EVENT') || 100);
-    this.waitlistSessionTtlSec = Number(this.configService.get<string>('WAITLIST_SESSION_TTL_SEC') || 90);
-    this.statusLogThrottleSec = Number(this.configService.get<string>('ADMISSION_STATUS_LOG_THROTTLE_SEC') || 15);
+    this.writingMaxPerEvent = this.getPositiveConfigNumber('WRITING_MAX_PER_EVENT', 200);
+    this.formTtlSec = this.getPositiveConfigNumber('FORM_TTL_SEC', 60);
+    this.retryAfterSec = this.getPositiveConfigNumber('WAITLIST_RETRY_AFTER_SEC', 5);
+    this.avgWritingSecDefault = this.getPositiveConfigNumber('ETA_DEFAULT_WRITING_SEC', 45);
+    this.waitlistMaxPerEvent = this.getPositiveConfigNumber('WAITLIST_MAX_PER_EVENT', 100);
+    this.waitlistSessionTtlSec = this.getPositiveConfigNumber('WAITLIST_SESSION_TTL_SEC', 90);
+    this.statusLogThrottleSec = this.getPositiveConfigNumber('ADMISSION_STATUS_LOG_THROTTLE_SEC', 15);
+  }
+
+  private getPositiveConfigNumber(key: string, fallback: number): number {
+    const raw = this.configService.get<string>(key);
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+
+    if (raw !== undefined) {
+      this.logger.warn(`Invalid config value for ${key}: "${raw}". Using fallback ${fallback}.`);
+    }
+    return fallback;
   }
 
   private normalizeEventType(eventType: string): string {
@@ -286,7 +299,8 @@ export class AdmissionService {
       .exec();
 
     const rank = await redis.zrank(waitlistKey, sessionId);
-    const queueSize = await this.getQueueSize(eventType, requestId);
+    const queueSizeRaw = await redis.zcard(waitlistKey);
+    const queueSize = Number.isFinite(queueSizeRaw) ? queueSizeRaw : currentQueueSize + 1;
     const position = (rank ?? 0) + 1;
     const etaSec = await this.computeEtaSec(eventType, position, writersActive);
 
@@ -354,11 +368,13 @@ export class AdmissionService {
     const writersActive = await this.getWritersActive(eventType, requestId);
 
     if (writersActive < this.writingMaxPerEvent) {
-      const promoted = await this.tryPromoteFromWaitlist(eventType, requestId);
+      const promoted = await this.tryPromoteFromWaitlist(eventType, requestId, writersActive);
       if (promoted && promoted.sessionId === sessionId) {
         return this.status(eventType, sessionId, requestId);
       }
     }
+
+    await this.cleanupStaleWaitlist(eventType, requestId);
 
     if (sessionData.status === 'WRITING') {
       const expiresAtMs = Number(sessionData.expiresAt || Date.now());
@@ -422,7 +438,7 @@ export class AdmissionService {
     const rank = await redis.zrank(waitlistKey, sessionId);
     if (rank === null) {
       this.clearStatusLogState(eventType, sessionId);
-      const promoted = await this.tryPromoteFromWaitlist(eventType, requestId);
+      const promoted = await this.tryPromoteFromWaitlist(eventType, requestId, writersActive);
       if (promoted && promoted.sessionId === sessionId) {
         return this.status(eventType, sessionId, requestId);
       }
@@ -448,7 +464,7 @@ export class AdmissionService {
     await redis.expire(sessionKey, this.waitlistSessionTtlSec);
 
     const position = rank + 1;
-    const queueSize = await this.getQueueSize(eventType, requestId);
+    const queueSize = await redis.zcard(waitlistKey);
     const etaSec = await this.computeEtaSec(eventType, position, writersActive);
 
     if (
@@ -593,12 +609,17 @@ export class AdmissionService {
     };
   }
 
-  private async tryPromoteFromWaitlist(eventType: string, requestId?: string): Promise<{ sessionId: string } | null> {
+  private async tryPromoteFromWaitlist(
+    eventType: string,
+    requestId?: string,
+    currentWritersActive?: number,
+  ): Promise<{ sessionId: string } | null> {
     const redis = this.redisService.getClient();
     const writersKey = this.writersKey(eventType);
     const waitlistKey = this.waitlistKey(eventType);
 
-    const writersActive = await this.getWritersActive(eventType, requestId);
+    const writersActive =
+      typeof currentWritersActive === 'number' ? currentWritersActive : await this.getWritersActive(eventType, requestId);
     if (writersActive >= this.writingMaxPerEvent) {
       return null;
     }

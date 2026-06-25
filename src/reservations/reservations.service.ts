@@ -42,6 +42,7 @@ type ReservationIdentityPayload = {
 export class ReservationsService {
   private readonly logger = new Logger(ReservationsService.name);
   private readonly rutCountKeyPrefix = 'event';
+  private readonly reservationConfirmTtlSec: number;
 
   constructor(
     @InjectModel(Reservation.name) private reservationModel: Model<Reservation>,
@@ -53,7 +54,19 @@ export class ReservationsService {
     private schedulesGateway: SchedulesGateway,
     private configService: ConfigService,
     private redisService: RedisService,
-  ) {}
+  ) {
+    const configuredTtl = Number(this.configService.get<string>('RESERVATION_CONFIRM_TTL_SEC') || 300);
+    this.reservationConfirmTtlSec = Number.isFinite(configuredTtl) && configuredTtl > 0 ? configuredTtl : 300;
+  }
+
+  private getReservationConfirmTtlLabel(): string {
+    if (this.reservationConfirmTtlSec % 60 === 0) {
+      const minutes = this.reservationConfirmTtlSec / 60;
+      return `${minutes} minuto${minutes === 1 ? '' : 's'}`;
+    }
+
+    return `${this.reservationConfirmTtlSec} segundo${this.reservationConfirmTtlSec === 1 ? '' : 's'}`;
+  }
 
   private getRutCountKey(eventType: string): string {
     return `${this.rutCountKeyPrefix}:${eventType}:rut-count`;
@@ -106,6 +119,147 @@ export class ReservationsService {
 
   private normalizePhone(phone: string): string {
     return phone.trim();
+  }
+
+  private parseRutVariants(rut: string): { clean: string; variants: string[] } | null {
+    const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
+    if (clean.length < 2) {
+      return null;
+    }
+
+    const body = clean.slice(0, -1);
+    const dv = clean.slice(-1);
+    const formatted = `${body}-${dv}`;
+
+    let formattedBody = '';
+    let count = 0;
+    for (let i = body.length - 1; i >= 0; i--) {
+      formattedBody = body[i] + formattedBody;
+      count++;
+      if (count % 3 === 0 && i !== 0) {
+        formattedBody = `.${formattedBody}`;
+      }
+    }
+    const dotted = `${formattedBody}-${dv}`;
+
+    return {
+      clean,
+      variants: Array.from(new Set([this.normalizeRut(rut), clean, formatted, dotted])),
+    };
+  }
+
+  private async checkRutsRegistrationBatch(ruts: string[], eventTypeInput: string): Promise<Record<string, boolean>> {
+    const eventType = this.normalizeEventType(eventTypeInput);
+    const normalizedRuts = Array.from(new Set((ruts || []).map((rut) => this.normalizeRut(rut)).filter(Boolean)));
+    const result: Record<string, boolean> = {};
+
+    for (const rut of normalizedRuts) {
+      result[rut] = false;
+    }
+
+    if (normalizedRuts.length === 0) {
+      return result;
+    }
+
+    const variantToCanonical = new Map<string, Set<string>>();
+    const canonicalToVariants = new Map<string, string[]>();
+    const cleanRuts = new Set<string>();
+
+    for (const rut of normalizedRuts) {
+      const parsed = this.parseRutVariants(rut);
+      if (!parsed) {
+        continue;
+      }
+
+      canonicalToVariants.set(rut, parsed.variants);
+      cleanRuts.add(parsed.clean);
+
+      for (const variant of parsed.variants) {
+        const canonicalSet = variantToCanonical.get(variant) ?? new Set<string>();
+        canonicalSet.add(rut);
+        variantToCanonical.set(variant, canonicalSet);
+      }
+    }
+
+    if (variantToCanonical.size === 0) {
+      return result;
+    }
+
+    const dependentReservations = await this.reservationModel
+      .find({
+        eventType,
+        state_reserve: true,
+        'attendingDependents.rut': { $in: Array.from(variantToCanonical.keys()) },
+      })
+      .select({ attendingDependents: 1 })
+      .lean();
+
+    const registeredDependentVariants = new Set<string>();
+    for (const reservation of dependentReservations) {
+      for (const dependent of reservation.attendingDependents || []) {
+        if (dependent?.rut) {
+          registeredDependentVariants.add(this.normalizeRut(dependent.rut));
+        }
+      }
+    }
+
+    for (const [rut, variants] of canonicalToVariants.entries()) {
+      if (variants.some((variant) => registeredDependentVariants.has(variant))) {
+        result[rut] = true;
+      }
+    }
+
+    if (cleanRuts.size === 0) {
+      return result;
+    }
+
+    const matchingGuardians = await this.guardiansService.findManyByRuts(Array.from(cleanRuts));
+    if (matchingGuardians.length === 0) {
+      return result;
+    }
+
+    const guardianIdVariants: Array<string | Types.ObjectId> = [];
+    const guardianIdToRuts = new Map<string, Set<string>>();
+
+    for (const guardian of matchingGuardians) {
+      const guardianId = guardian._id.toString();
+      guardianIdVariants.push(guardianId);
+      if (Types.ObjectId.isValid(guardianId)) {
+        guardianIdVariants.push(new Types.ObjectId(guardianId));
+      }
+
+      const canonicalSet = variantToCanonical.get(this.normalizeRut(guardian.rut));
+      if (canonicalSet && canonicalSet.size > 0) {
+        guardianIdToRuts.set(guardianId, new Set(canonicalSet));
+      }
+    }
+
+    const guardianReservations = await this.reservationModel.collection
+      .find({
+        eventType,
+        state_reserve: true,
+        guardianId: { $in: guardianIdVariants },
+      })
+      .project({ guardianId: 1 })
+      .toArray();
+
+    for (const reservation of guardianReservations) {
+      const guardianId = reservation.guardianId?.toString();
+      if (!guardianId) {
+        continue;
+      }
+
+      const mappedRuts = guardianIdToRuts.get(guardianId);
+      if (!mappedRuts) {
+        continue;
+      }
+
+      for (const rut of mappedRuts) {
+        result[rut] = true;
+      }
+    }
+
+    return result;
   }
 
   private sameEntityId(a?: string | null, b?: string | null): boolean {
@@ -321,42 +475,26 @@ export class ReservationsService {
           rutResult[ruts[i]] = this.toNumber(values[i]) > 0;
         }
 
-        const positiveRuts = ruts.filter((rut) => rutResult[rut]);
-        if (positiveRuts.length > 0) {
-          const positiveChecks = await Promise.all(
-            positiveRuts.map(async (rut) => {
-              const dbCheck = await this.checkRutRegistration(rut, eventType);
-              return [rut, dbCheck.registered] as const;
-            }),
-          );
+        const dbRutResult = await this.checkRutsRegistrationBatch(ruts, eventType);
+        const syncPipeline = redis.multi();
 
-          const cleanupPipeline = redis.multi();
-          for (const [rut, registered] of positiveChecks) {
-            if (!registered) {
-              rutResult[rut] = false;
-              cleanupPipeline.hdel(this.getRutCountKey(eventType), rut);
-            }
+        for (const rut of ruts) {
+          const dbRegistered = Boolean(dbRutResult[rut]);
+          const redisRegistered = rutResult[rut];
+
+          if (redisRegistered && !dbRegistered) {
+            rutResult[rut] = false;
+            syncPipeline.hdel(this.getRutCountKey(eventType), rut);
+            continue;
           }
-          await cleanupPipeline.exec();
-        }
 
-        const unresolvedRuts = ruts.filter((rut) => !rutResult[rut]);
-        if (unresolvedRuts.length > 0) {
-          const dbChecks = await Promise.all(
-            unresolvedRuts.map(async (rut) => {
-              const dbCheck = await this.checkRutRegistration(rut, eventType);
-              return [rut, dbCheck.registered] as const;
-            }),
-          );
-
-          const backfillPipeline = redis.multi();
-          for (const [rut, registered] of dbChecks) {
-            if (!registered) continue;
+          if (!redisRegistered && dbRegistered) {
             rutResult[rut] = true;
-            backfillPipeline.hset(this.getRutCountKey(eventType), rut, '1');
+            syncPipeline.hset(this.getRutCountKey(eventType), rut, '1');
           }
-          await backfillPipeline.exec();
         }
+
+        await syncPipeline.exec();
       }
 
       const ownershipAvailability = await this.applyGuardianOwnershipAvailability({
@@ -409,13 +547,7 @@ export class ReservationsService {
     }
 
     const fallbackStartedAt = Date.now();
-    const rutChecks = await Promise.all(
-      ruts.map(async (rut) => {
-        const check = await this.checkRutRegistration(rut, eventType);
-        return [rut, check.registered] as const;
-      }),
-    );
-    const rutResult = Object.fromEntries(rutChecks);
+    const rutResult = await this.checkRutsRegistrationBatch(ruts, eventType);
 
     const fallbackOwnershipAvailability = await this.applyGuardianOwnershipAvailability({
       tutorGuardianId,
@@ -1113,13 +1245,13 @@ export class ReservationsService {
     });
     await this.sendReservationConfirmationNotifications(guardian, finalReservationStartTime, dto.attendingDependents, finalReservation._id.toString(), finalReservation.eventType);
 
-    // Programar la expiración automática en 5 minutos con reintentos para alta concurrencia
+    // Programar la expiración automática segun configuracion (RESERVATION_CONFIRM_TTL_SEC)
     try {
       await this.reservationQueue.add(
         'expire-reservation',
         { reservationId: finalReservation._id.toString() },
         {
-          delay: 5 * 60 * 1000, // 5 minutos (300000 ms)
+          delay: this.reservationConfirmTtlSec * 1000,
           attempts: 3, // Intentar hasta 3 veces si falla por WriteConflict
           backoff: {
             type: 'exponential',
@@ -1136,57 +1268,9 @@ export class ReservationsService {
   }
 
   async checkRutRegistration(rut: string, eventType: string): Promise<{ registered: boolean }> {
-    const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
-    if (clean.length < 2) {
-      return { registered: false };
-    }
-    const body = clean.slice(0, -1);
-    const dv = clean.slice(-1);
-    const formatted = `${body}-${dv}`;
-
-    // Generar formato con puntos
-    let formattedBody = '';
-    let count = 0;
-    for (let i = body.length - 1; i >= 0; i--) {
-      formattedBody = body[i] + formattedBody;
-      count++;
-      if (count % 3 === 0 && i !== 0) {
-        formattedBody = '.' + formattedBody;
-      }
-    }
-    const dotted = `${formattedBody}-${dv}`;
-
-    const rutsToCheck = [clean, formatted, dotted];
-
-    // 1. Verificar si está registrado como acompañante en alguna reserva activa
-    const dependentExists = await this.reservationModel.exists({
-      eventType,
-      state_reserve: true,
-      'attendingDependents.rut': { $in: rutsToCheck },
-    });
-
-    if (dependentExists) {
-      return { registered: true };
-    }
-
-    // 2. Verificar si está registrado como tutor en alguna reserva activa
-    const matchingGuardians = await this.guardiansService.findManyByRuts([clean]);
-    const guardianIds = matchingGuardians.map((g) => g._id);
-
-    if (guardianIds.length > 0) {
-      const guardianIdVariants = guardianIds.flatMap((id) => [id, id.toString()]);
-      const guardianExists = await this.reservationModel.collection.findOne({
-        eventType,
-        state_reserve: true,
-        guardianId: { $in: guardianIdVariants },
-      });
-
-      if (guardianExists) {
-        return { registered: true };
-      }
-    }
-
-    return { registered: false };
+    const normalizedRut = this.normalizeRut(rut);
+    const batchResult = await this.checkRutsRegistrationBatch([normalizedRut], eventType);
+    return { registered: Boolean(batchResult[normalizedRut]) };
   }
 
   private async sendReservationConfirmationNotifications(
@@ -1209,7 +1293,16 @@ export class ReservationsService {
     ];
 
     try {
-      await this.mailService.sendReservationConfirmation(guardian.email, guardian.name, scheduleDateTime, mailCompanions, reservationId, eventType);
+      const qrBuffer = await this.getQrCodeBuffer(reservationId);
+      await this.mailService.sendReservationConfirmation(
+        guardian.email,
+        guardian.name,
+        scheduleDateTime,
+        mailCompanions,
+        reservationId,
+        qrBuffer,
+        eventType,
+      );
     } catch (error) {
       this.logger.error(`No se pudo enviar correo de confirmacion para guardianId=${guardian.email}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1229,9 +1322,10 @@ export class ReservationsService {
         eventTitle = 'tu reserva en la Pista de Hielo! ❄️⛸️';
       }
 
+      const confirmTtlLabel = this.getReservationConfirmTtlLabel();
       const message =
         `¡Estás a un paso de confirmar ${eventTitle}\n\n` +
-        `Debes confirmar tu reserva dentro de los próximos 5 minutos. Si no la confirmas, los cupos se liberarán automáticamente.\n\n` +
+        `Debes confirmar tu reserva dentro de los próximos ${confirmTtlLabel}. Si no la confirmas, los cupos se liberarán automáticamente.\n\n` +
         `📅 *Fecha y hora:* ${scheduleDateTime} hrs.\n` +
         `👥 *Integrantes:*\n${companionsText || '- Sin acompañantes'}\n\n` +
         `👇 *Presiona el enlace para confirmar:*\n` +
@@ -1397,74 +1491,83 @@ export class ReservationsService {
     const guardian = await this.guardiansService.findById(reservation.guardianId.toString());
     const schedule = await this.scheduleModel.findById(reservation.scheduleId).exec();
 
+    return {
+      reservation: this.buildReservationCheckInView(reservation, guardian, schedule),
+    };
+  }
+
+  private buildReservationCheckInView(reservation: Reservation, guardian: any, schedule: Schedule | null) {
+    
     const now = new Date();
     const startTime = schedule ? new Date(schedule.startTime) : null;
     const endTime = startTime && schedule ? new Date(startTime.getTime() + (schedule.durationMinutes || 30) * 60000) : null;
     const isExpired = endTime ? endTime < now : false;
 
     return {
-      reservation: {
-        id: reservation._id.toString(),
-        guardianName: guardian.name,
-        guardianRut: guardian.rut,
-        guardianEmail: guardian.email,
-        guardianPhone: guardian.phone,
-        startTime,
-        durationMinutes: schedule?.durationMinutes ?? 30,
-        attendingDependents: reservation.attendingDependents,
-        isCheckedIn: reservation.isCheckedIn,
-        checkInAt: reservation.checkInAt,
-        isExpired,
-        status: isExpired ? 'EXPIRADA' : reservation.isCheckedIn ? 'CHECKED_IN' : 'VIGENTE',
-        eventType: schedule?.eventType,
-      },
+      id: reservation._id.toString(),
+      guardianName: guardian.name,
+      guardianRut: guardian.rut,
+      guardianEmail: guardian.email,
+      guardianPhone: guardian.phone,
+      startTime,
+      durationMinutes: schedule?.durationMinutes ?? 30,
+      attendingDependents: reservation.attendingDependents,
+      isCheckedIn: reservation.isCheckedIn,
+      checkInAt: reservation.checkInAt,
+      isExpired,
+      status: isExpired ? 'EXPIRADA' : reservation.isCheckedIn ? 'CHECKED_IN' : 'VIGENTE',
+      eventType: schedule?.eventType,
     };
   }
 
-  async performCheckIn(id: string, pin: string) {
-    const statusResult = await this.getReservationCheckInStatus(id);
-    const { reservation } = statusResult;
-
-    const expectedPin = process.env.INSPECTOR_PIN || '1234';
+  private assertInspectorPin(pin: string): void {
+    const expectedPin = this.configService.get<string>('INSPECTOR_PIN') || '1234';
     if (!pin || pin.trim() !== expectedPin.trim()) {
       throw new ForbiddenException('PIN de inspector incorrecto o no suministrado.');
     }
+  }
 
-    if (reservation.isCheckedIn) {
+  async performCheckIn(id: string, pin: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Id de reserva invalido');
+    }
+    this.assertInspectorPin(pin);
+
+    const dbReservation = await this.reservationModel.findById(id).exec();
+    if (!dbReservation || dbReservation.state_reserve === false) {
+      throw new NotFoundException('Reserva no encontrada o inactiva');
+    }
+
+    const guardian = await this.guardiansService.findById(dbReservation.guardianId.toString());
+    const schedule = await this.scheduleModel.findById(dbReservation.scheduleId).exec();
+    const reservationView = this.buildReservationCheckInView(dbReservation, guardian, schedule);
+
+    if (reservationView.isCheckedIn) {
       return {
         success: true,
         message: 'El check-in ya habia sido realizado previamente.',
-        reservation,
+        reservation: reservationView,
       };
     }
 
-    if (reservation.isExpired) {
+    if (reservationView.isExpired) {
       throw new BadRequestException('El horario de la reserva ya expiro.');
     }
 
-    // Actualizar en BD
-    const dbReservation = await this.reservationModel.findById(id);
-    if (!dbReservation) {
-      throw new NotFoundException('Reserva no encontrada');
-    }
     dbReservation.isCheckedIn = true;
     dbReservation.checkInAt = new Date();
     await dbReservation.save();
 
-    // Obtener estado actualizado
-    const updatedStatus = await this.getReservationCheckInStatus(id);
+    const updatedReservationView = this.buildReservationCheckInView(dbReservation, guardian, schedule);
     return {
       success: true,
       message: 'Check-in realizado exitosamente.',
-      reservation: updatedStatus.reservation,
+      reservation: updatedReservationView,
     };
   }
 
   async getReservationCheckInDetails(id: string, pin: string) {
-    const expectedPin = process.env.INSPECTOR_PIN || '1234';
-    if (!pin || pin.trim() !== expectedPin.trim()) {
-      throw new ForbiddenException('PIN de inspector incorrecto o no suministrado.');
-    }
+    this.assertInspectorPin(pin);
     return this.getReservationCheckInStatus(id);
   }
 
@@ -2139,7 +2242,7 @@ export class ReservationsService {
     }
 
     if (reservation.checkMail === false) {
-      throw new ConflictException('Esta reserva expiró por falta de confirmación dentro de 5 minutos y los cupos ya fueron liberados.');
+      throw new ConflictException(`Esta reserva expiró por falta de confirmación dentro de ${this.getReservationConfirmTtlLabel()} y los cupos ya fueron liberados.`);
     }
 
     if (!reservation.state_reserve) {
@@ -2149,10 +2252,6 @@ export class ReservationsService {
     reservation.checkMail = true;
     reservation.checkMailDate = new Date();
     const savedReservation = await reservation.save();
-
-    this.sendQrNotifications(savedReservation).catch((err) => {
-      this.logger.error(`Error al enviar notificaciones de QR post-confirmación: ${err.message}`);
-    });
 
     return savedReservation;
   }
@@ -2180,7 +2279,7 @@ export class ReservationsService {
         }
 
         if (reservation.checkMail === false) {
-          throw new ConflictException('Esta reserva ya expiró por falta de confirmación dentro de 5 minutos y sus cupos ya fueron liberados.');
+          throw new ConflictException(`Esta reserva ya expiró por falta de confirmación dentro de ${this.getReservationConfirmTtlLabel()} y sus cupos ya fueron liberados.`);
         }
 
         if (!reservation.state_reserve) {
@@ -2309,7 +2408,7 @@ export class ReservationsService {
     }
 
     if (updatedScheduleAfterExpiry && expiredReservation) {
-      this.logger.log(`Reserva ${id} EXPIRADA automáticamente por falta de confirmación en 30 minutos. Cupos devueltos al scheduleId=${expiredReservation.scheduleId}. Disponibles: ${updatedScheduleAfterExpiry.availableSpots}`);
+      this.logger.log(`Reserva ${id} EXPIRADA automáticamente por falta de confirmación en ${this.getReservationConfirmTtlLabel()}. Cupos devueltos al scheduleId=${expiredReservation.scheduleId}. Disponibles: ${updatedScheduleAfterExpiry.availableSpots}`);
       this.schedulesGateway.broadcastSpotsUpdate(expiredReservation.scheduleId.toString(), updatedScheduleAfterExpiry.availableSpots);
       if (expireContext.identityPayload) {
         await this.updateEventIdentityCounters({
@@ -2327,103 +2426,4 @@ export class ReservationsService {
     return { success: false, message: 'No se pudo expirar la reserva.' };
   }
 
-  private async sendQrNotifications(reservation: Reservation) {
-    const guardian = await this.guardiansService.findById(reservation.guardianId.toString());
-    const schedule = await this.scheduleModel.findById(reservation.scheduleId).exec();
-    if (!schedule) {
-      this.logger.error(`Horario no encontrado para enviar QR de la reserva ${reservation._id}`);
-      return;
-    }
-
-    const scheduleDateTime = this.formatDateTime(schedule.startTime);
-    const baseUrl = (this.configService.get<string>('BACKEND_URL') || 'http://localhost:3500').trim();
-
-    const qrBuffer = await this.getQrCodeBuffer(reservation._id.toString());
-
-    // 1. Enviar Correo Final con QR Inline (CID)
-    try {
-      const mailCompanions = [
-        {
-          name: guardian.name,
-          rut: guardian.rut,
-        },
-        ...reservation.attendingDependents,
-      ];
-
-      await this.mailService.sendActiveReservationMail(guardian.email, guardian.name, scheduleDateTime, mailCompanions, reservation._id.toString(), qrBuffer, reservation.eventType);
-      this.logger.log(`Correo con QR enviado con éxito para la reserva confirmada: ${reservation._id}`);
-    } catch (mailErr) {
-      this.logger.error(`Error al enviar correo con QR para la reserva ${reservation._id}: ${mailErr instanceof Error ? mailErr.message : String(mailErr)}`);
-    }
-
-    // 2. Enviar WhatsApp Final con QR de Imagen por API de Meta
-    const qrUrl = `${baseUrl}/reservations/${reservation._id}/qrcode`;
-
-    // Títulos y Emojis dinámicos por tipo de evento
-    let titleMessage = '¡Tu reserva ha sido confirmada! 🎉';
-    let eventTitle = 'tu reserva';
-    if (reservation.eventType === 'selva') {
-      titleMessage = '¡Tu reserva para Selva Viva ha sido confirmada! 🦎🦜';
-      eventTitle = 'tu reserva en Selva Viva! 🦎🦜';
-    } else if (reservation.eventType === 'patines') {
-      titleMessage = '¡Tu reserva para la Pista de Hielo ha sido confirmada! ❄️⛸️';
-      eventTitle = 'tu reserva en la Pista de Hielo! ❄️⛸️';
-    }
-
-    // Formatear Fecha y Hora exactamente como se pide (Viernes 19 de junio de 2026 · 12:00 hrs.)
-    const startTimeDate = new Date(schedule.startTime);
-    const optionsDate: Intl.DateTimeFormatOptions = {
-      timeZone: 'America/Santiago',
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-    };
-    const optionsTime: Intl.DateTimeFormatOptions = {
-      timeZone: 'America/Santiago',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    };
-    const dateLabel = startTimeDate.toLocaleDateString('es-CL', optionsDate);
-    const timeLabel = startTimeDate.toLocaleTimeString('es-CL', optionsTime);
-    const capitalizedDateLabel = dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1);
-    const formattedDateTime = `${capitalizedDateLabel} · ${timeLabel} hrs.`;
-
-    // Integrantes del Grupo
-    const groupItems: string[] = [];
-    if (reservation.guardianParticipates) {
-      groupItems.push(`* ${guardian.name} (${guardian.rut})`);
-    }
-    reservation.attendingDependents.forEach((dep) => {
-      groupItems.push(`* ${dep.name} ${dep.rut ? `(${dep.rut})` : ''}`);
-    });
-    const groupText = groupItems.join('\n');
-
-    // Mensaje estructurado de WhatsApp
-    const wspMessage =
-      `${titleMessage}\n\n` +
-      `📅 *Fecha y hora:*\n` +
-      `${formattedDateTime}\n\n` +
-      `*Grupo registrado:*\n` +
-      `${groupText}\n\n` +
-      `🎫 *Código QR de ingreso:*\n` +
-      `Puedes descargarlo aquí: ${qrUrl}\n\n` +
-      `⚠️ *Importante:*\n` +
-      `* Llega al menos 20 minutos antes de tu horario.\n` +
-      `* Presenta este código QR al ingresar.\n` +
-      `* Revisa las normas de uso antes de tu visita.\n\n` +
-      `¡Te esperamos! 🐍🐢`;
-
-    try {
-      const wspMetaStatus = this.wspMetaService.getStatus();
-      if (wspMetaStatus.enabled && wspMetaStatus.configured) {
-        await this.wspMetaService.sendTextMessage(guardian.phone, wspMessage);
-        await this.wspMetaService.sendImageMessage(guardian.phone, qrUrl, `Código QR de acceso para ${eventTitle}`);
-        this.logger.log(`WhatsApp con QR enviado con éxito para la reserva confirmada: ${reservation._id}`);
-      }
-    } catch (wspErr) {
-      this.logger.error(`Error al enviar WhatsApp con QR para la reserva ${reservation._id}: ${wspErr instanceof Error ? wspErr.message : String(wspErr)}`);
-    }
-  }
 }
