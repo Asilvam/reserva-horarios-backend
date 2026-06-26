@@ -12,6 +12,8 @@ import { MailModule } from './mail/mail.module';
 import { AdminModule } from './admin/admin.module';
 import { WspMetaModule } from './wsp-meta/wsp-meta.module';
 import { BullModule } from '@nestjs/bullmq';
+import { RedisModule } from './common/redis/redis.module';
+import { AdmissionModule } from './admission/admission.module';
 
 @Module({
   imports: [
@@ -19,6 +21,7 @@ import { BullModule } from '@nestjs/bullmq';
       isGlobal: true, // Makes ConfigModule available globally
     }),
     DatabaseModule,
+    RedisModule,
     SchedulesModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
@@ -50,6 +53,7 @@ import { BullModule } from '@nestjs/bullmq';
       },
     }),
     ReservationsModule,
+    AdmissionModule,
     UsersModule,
     AuthModule,
     MailModule,

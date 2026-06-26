@@ -16,15 +16,33 @@ import { WspMetaService } from '../wsp-meta/wsp-meta.service';
 import { SchedulesGateway } from '../schedules/schedules.gateway';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { RedisService } from '../common/redis/redis.service';
+import { PrecheckReservationDto } from './dto/precheck-reservation.dto';
 
 export type ReservationQueuePayload = {
   dto: CreateReservationDto;
   authUser?: AuthUser;
 };
 
+type PrecheckResult = {
+  rutRegisteredByValue: Record<string, boolean>;
+  emailAvailable: boolean;
+  phoneAvailable: boolean;
+  source: 'redis' | 'mongo-fallback';
+};
+
+type ReservationIdentityPayload = {
+  eventType: string;
+  ruts: string[];
+  email?: string;
+  phone?: string;
+};
+
 @Injectable()
 export class ReservationsService {
   private readonly logger = new Logger(ReservationsService.name);
+  private readonly rutCountKeyPrefix = 'event';
+  private readonly reservationConfirmTtlSec: number;
 
   constructor(
     @InjectModel(Reservation.name) private reservationModel: Model<Reservation>,
@@ -35,7 +53,511 @@ export class ReservationsService {
     private wspMetaService: WspMetaService,
     private schedulesGateway: SchedulesGateway,
     private configService: ConfigService,
-  ) {}
+    private redisService: RedisService,
+  ) {
+    const configuredTtl = Number(this.configService.get<string>('RESERVATION_CONFIRM_TTL_SEC') || 300);
+    this.reservationConfirmTtlSec = Number.isFinite(configuredTtl) && configuredTtl > 0 ? configuredTtl : 300;
+  }
+
+  private getReservationConfirmTtlLabel(): string {
+    if (this.reservationConfirmTtlSec % 60 === 0) {
+      const minutes = this.reservationConfirmTtlSec / 60;
+      return `${minutes} minuto${minutes === 1 ? '' : 's'}`;
+    }
+
+    return `${this.reservationConfirmTtlSec} segundo${this.reservationConfirmTtlSec === 1 ? '' : 's'}`;
+  }
+
+  private getRutCountKey(eventType: string): string {
+    return `${this.rutCountKeyPrefix}:${eventType}:rut-count`;
+  }
+
+  private getEmailCountKey(eventType: string): string {
+    return `${this.rutCountKeyPrefix}:${eventType}:email-count`;
+  }
+
+  private getPhoneCountKey(eventType: string): string {
+    return `${this.rutCountKeyPrefix}:${eventType}:phone-count`;
+  }
+
+  private maskRut(rut: string): string {
+    if (!rut) return '***';
+    if (rut.length <= 4) return `***${rut}`;
+    return `${rut.slice(0, 2)}***${rut.slice(-2)}`;
+  }
+
+  private maskEmail(email: string): string {
+    if (!email) return '***';
+    const [name, domain] = email.split('@');
+    if (!domain) return '***';
+    const maskedName = name.length <= 2 ? `${name[0] ?? '*'}*` : `${name.slice(0, 2)}***`;
+    return `${maskedName}@${domain}`;
+  }
+
+  private maskPhone(phone: string): string {
+    if (!phone) return '***';
+    return phone.length <= 4 ? `***${phone}` : `${phone.slice(0, 3)}***${phone.slice(-2)}`;
+  }
+
+  private toNumber(value: string | null): number {
+    if (!value) return 0;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private normalizeEventType(eventType: string): string {
+    return eventType.trim().toLowerCase();
+  }
+
+  private normalizeRut(rut: string): string {
+    return rut.trim().toUpperCase();
+  }
+
+  private normalizeEmail(email: string): string {
+    return email.trim().toLowerCase();
+  }
+
+  private normalizePhone(phone: string): string {
+    return phone.trim();
+  }
+
+  private parseRutVariants(rut: string): { clean: string; variants: string[] } | null {
+    const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
+    if (clean.length < 2) {
+      return null;
+    }
+
+    const body = clean.slice(0, -1);
+    const dv = clean.slice(-1);
+    const formatted = `${body}-${dv}`;
+
+    let formattedBody = '';
+    let count = 0;
+    for (let i = body.length - 1; i >= 0; i--) {
+      formattedBody = body[i] + formattedBody;
+      count++;
+      if (count % 3 === 0 && i !== 0) {
+        formattedBody = `.${formattedBody}`;
+      }
+    }
+    const dotted = `${formattedBody}-${dv}`;
+
+    return {
+      clean,
+      variants: Array.from(new Set([this.normalizeRut(rut), clean, formatted, dotted])),
+    };
+  }
+
+  private async checkRutsRegistrationBatch(ruts: string[], eventTypeInput: string): Promise<Record<string, boolean>> {
+    const eventType = this.normalizeEventType(eventTypeInput);
+    const normalizedRuts = Array.from(new Set((ruts || []).map((rut) => this.normalizeRut(rut)).filter(Boolean)));
+    const result: Record<string, boolean> = {};
+
+    for (const rut of normalizedRuts) {
+      result[rut] = false;
+    }
+
+    if (normalizedRuts.length === 0) {
+      return result;
+    }
+
+    const variantToCanonical = new Map<string, Set<string>>();
+    const canonicalToVariants = new Map<string, string[]>();
+    const cleanRuts = new Set<string>();
+
+    for (const rut of normalizedRuts) {
+      const parsed = this.parseRutVariants(rut);
+      if (!parsed) {
+        continue;
+      }
+
+      canonicalToVariants.set(rut, parsed.variants);
+      cleanRuts.add(parsed.clean);
+
+      for (const variant of parsed.variants) {
+        const canonicalSet = variantToCanonical.get(variant) ?? new Set<string>();
+        canonicalSet.add(rut);
+        variantToCanonical.set(variant, canonicalSet);
+      }
+    }
+
+    if (variantToCanonical.size === 0) {
+      return result;
+    }
+
+    if (cleanRuts.size === 0) {
+      return result;
+    }
+
+    const matchingGuardians = await this.guardiansService.findManyByRuts(Array.from(cleanRuts));
+    if (matchingGuardians.length === 0) {
+      return result;
+    }
+
+    const guardianIdVariants: Array<string | Types.ObjectId> = [];
+    const guardianIdToRuts = new Map<string, Set<string>>();
+
+    for (const guardian of matchingGuardians) {
+      const guardianId = guardian._id.toString();
+      guardianIdVariants.push(guardianId);
+      if (Types.ObjectId.isValid(guardianId)) {
+        guardianIdVariants.push(new Types.ObjectId(guardianId));
+      }
+
+      const canonicalSet = variantToCanonical.get(this.normalizeRut(guardian.rut));
+      if (canonicalSet && canonicalSet.size > 0) {
+        guardianIdToRuts.set(guardianId, new Set(canonicalSet));
+      }
+    }
+
+    const guardianReservations = await this.reservationModel.collection
+      .find({
+        eventType,
+        state_reserve: true,
+        guardianId: { $in: guardianIdVariants },
+      })
+      .project({ guardianId: 1 })
+      .toArray();
+
+    for (const reservation of guardianReservations) {
+      const guardianId = reservation.guardianId?.toString();
+      if (!guardianId) {
+        continue;
+      }
+
+      const mappedRuts = guardianIdToRuts.get(guardianId);
+      if (!mappedRuts) {
+        continue;
+      }
+
+      for (const rut of mappedRuts) {
+        result[rut] = true;
+      }
+    }
+
+    return result;
+  }
+
+  private sameEntityId(a?: string | null, b?: string | null): boolean {
+    if (!a || !b) return false;
+    return a.toString() === b.toString();
+  }
+
+  private async getTutorGuardianIdFromRuts(ruts: string[]): Promise<string | null> {
+    if (!ruts || ruts.length === 0) {
+      return null;
+    }
+
+    const tutorRut = ruts[0];
+    if (!tutorRut) {
+      return null;
+    }
+
+    const guardian = await this.guardiansService.findByRut(tutorRut);
+    if (!guardian?._id) {
+      return null;
+    }
+
+    return guardian._id.toString();
+  }
+
+  private async applyGuardianOwnershipAvailability(args: {
+    tutorGuardianId: string | null;
+    email: string;
+    phone: string;
+    emailAvailable: boolean;
+    phoneAvailable: boolean;
+  }): Promise<{ emailAvailable: boolean; phoneAvailable: boolean }> {
+    let emailAvailable = args.emailAvailable;
+    let phoneAvailable = args.phoneAvailable;
+
+    if (args.email && emailAvailable) {
+      const emailOwnerId = await this.guardiansService.findIdByEmail(args.email);
+      if (emailOwnerId && !this.sameEntityId(emailOwnerId, args.tutorGuardianId)) {
+        emailAvailable = false;
+      }
+    }
+
+    if (args.phone && phoneAvailable) {
+      const phoneOwnerId = await this.guardiansService.findIdByPhone(args.phone);
+      if (phoneOwnerId && !this.sameEntityId(phoneOwnerId, args.tutorGuardianId)) {
+        phoneAvailable = false;
+      }
+    }
+
+    return { emailAvailable, phoneAvailable };
+  }
+
+  private getGuardianIdVariants(guardianId: string): Array<string | Types.ObjectId> {
+    const normalized = guardianId.toString();
+    if (!Types.ObjectId.isValid(normalized)) {
+      return [normalized];
+    }
+
+    return [normalized, new Types.ObjectId(normalized)];
+  }
+
+  private async getIdentityPayloadForReservation(
+    reservation: Pick<Reservation, 'guardianId' | 'attendingDependents' | 'eventType'>,
+  ): Promise<ReservationIdentityPayload | null> {
+    if (!reservation.eventType) {
+      return null;
+    }
+
+    const guardian = await this.guardiansService.findById(reservation.guardianId.toString());
+
+    return {
+      eventType: reservation.eventType,
+      ruts: [guardian.rut],
+      email: guardian.email,
+      phone: guardian.phone,
+    };
+  }
+
+  private async updateEventIdentityCounters(params: {
+    eventType: string;
+    ruts?: string[];
+    email?: string;
+    phone?: string;
+    delta: 1 | -1;
+    context: string;
+    requestId?: string;
+  }) {
+    const startedAt = Date.now();
+    const eventType = this.normalizeEventType(params.eventType);
+    const ruts = Array.from(new Set((params.ruts || []).map((r) => this.normalizeRut(r)).filter(Boolean)));
+    const email = params.email ? this.normalizeEmail(params.email) : '';
+    const phone = params.phone ? this.normalizePhone(params.phone) : '';
+
+    if (ruts.length === 0 && !email && !phone) {
+      return;
+    }
+
+    try {
+      const redis = this.redisService.getClient();
+      const pipeline = redis.multi();
+
+      const rutCountKey = this.getRutCountKey(eventType);
+      const emailCountKey = this.getEmailCountKey(eventType);
+      const phoneCountKey = this.getPhoneCountKey(eventType);
+
+      for (const rut of ruts) {
+        pipeline.hincrby(rutCountKey, rut, params.delta);
+      }
+
+      if (email) {
+        pipeline.hincrby(emailCountKey, email, params.delta);
+      }
+
+      if (phone) {
+        pipeline.hincrby(phoneCountKey, phone, params.delta);
+      }
+
+      await pipeline.exec();
+
+      if (params.delta === -1) {
+        const cleanupPipeline = redis.multi();
+        for (const rut of ruts) {
+          cleanupPipeline.hget(rutCountKey, rut);
+        }
+        if (email) {
+          cleanupPipeline.hget(emailCountKey, email);
+        }
+        if (phone) {
+          cleanupPipeline.hget(phoneCountKey, phone);
+        }
+        const cleanupValues = await cleanupPipeline.exec();
+        const deletePipeline = redis.multi();
+
+        let index = 0;
+        for (const rut of ruts) {
+          const value = cleanupValues?.[index]?.[1] as string | null;
+          if (this.toNumber(value) <= 0) {
+            deletePipeline.hdel(rutCountKey, rut);
+          }
+          index++;
+        }
+
+        if (email) {
+          const value = cleanupValues?.[index]?.[1] as string | null;
+          if (this.toNumber(value) <= 0) {
+            deletePipeline.hdel(emailCountKey, email);
+          }
+          index++;
+        }
+
+        if (phone) {
+          const value = cleanupValues?.[index]?.[1] as string | null;
+          if (this.toNumber(value) <= 0) {
+            deletePipeline.hdel(phoneCountKey, phone);
+          }
+        }
+
+        await deletePipeline.exec();
+      }
+
+      this.logger.log(
+        JSON.stringify({
+          event: 'reservation.redis.sync',
+          context: params.context,
+          requestId: params.requestId || null,
+          eventType,
+          delta: params.delta,
+          rutCount: ruts.length,
+          hasEmail: Boolean(email),
+          hasPhone: Boolean(phone),
+          durationMs: Date.now() - startedAt,
+          result: 'ok',
+        }),
+      );
+    } catch (error) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'reservation.redis.sync',
+          context: params.context,
+          requestId: params.requestId || null,
+          eventType,
+          delta: params.delta,
+          rutCount: ruts.length,
+          email: email ? this.maskEmail(email) : null,
+          phone: phone ? this.maskPhone(phone) : null,
+          durationMs: Date.now() - startedAt,
+          result: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  }
+
+  async precheckAvailability(dto: PrecheckReservationDto, requestId?: string): Promise<PrecheckResult> {
+    const startedAt = Date.now();
+    const eventType = this.normalizeEventType(dto.eventType);
+    const ruts = Array.from(new Set((dto.ruts || []).map((r) => this.normalizeRut(r)).filter(Boolean)));
+    const email = dto.email ? this.normalizeEmail(dto.email) : '';
+    const phone = dto.phone ? this.normalizePhone(dto.phone) : '';
+    const tutorGuardianId = await this.getTutorGuardianIdFromRuts(ruts);
+
+    try {
+      const redis = this.redisService.getClient();
+      const rutResult: Record<string, boolean> = {};
+      for (const rut of ruts) {
+        rutResult[rut] = false;
+      }
+
+      if (ruts.length > 0) {
+        const values = await redis.hmget(this.getRutCountKey(eventType), ...ruts);
+        for (let i = 0; i < ruts.length; i++) {
+          rutResult[ruts[i]] = this.toNumber(values[i]) > 0;
+        }
+
+        const dbRutResult = await this.checkRutsRegistrationBatch(ruts, eventType);
+        const syncPipeline = redis.multi();
+
+        for (const rut of ruts) {
+          const dbRegistered = Boolean(dbRutResult[rut]);
+          const redisRegistered = rutResult[rut];
+
+          if (redisRegistered && !dbRegistered) {
+            rutResult[rut] = false;
+            syncPipeline.hdel(this.getRutCountKey(eventType), rut);
+            continue;
+          }
+
+          if (!redisRegistered && dbRegistered) {
+            rutResult[rut] = true;
+            syncPipeline.hset(this.getRutCountKey(eventType), rut, '1');
+          }
+        }
+
+        await syncPipeline.exec();
+      }
+
+      const ownershipAvailability = await this.applyGuardianOwnershipAvailability({
+        tutorGuardianId,
+        email,
+        phone,
+        emailAvailable: true,
+        phoneAvailable: true,
+      });
+
+      const result: PrecheckResult = {
+        rutRegisteredByValue: rutResult,
+        emailAvailable: ownershipAvailability.emailAvailable,
+        phoneAvailable: ownershipAvailability.phoneAvailable,
+        source: 'redis',
+      };
+
+      this.logger.log(
+        JSON.stringify({
+          event: 'reservation.precheck',
+          requestId: requestId || null,
+          eventType,
+          source: result.source,
+          rutCount: ruts.length,
+          email: email ? this.maskEmail(email) : null,
+          phone: phone ? this.maskPhone(phone) : null,
+          registeredCount: Object.values(result.rutRegisteredByValue).filter(Boolean).length,
+          emailAvailable: result.emailAvailable,
+          phoneAvailable: result.phoneAvailable,
+          durationMs: Date.now() - startedAt,
+          result: 'ok',
+        }),
+      );
+
+      return result;
+    } catch (redisError) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'reservation.precheck.redis_error',
+          requestId: requestId || null,
+          eventType,
+          source: 'redis',
+          rutCount: ruts.length,
+          email: email ? this.maskEmail(email) : null,
+          phone: phone ? this.maskPhone(phone) : null,
+          durationMs: Date.now() - startedAt,
+          error: redisError instanceof Error ? redisError.message : String(redisError),
+        }),
+      );
+    }
+
+    const fallbackStartedAt = Date.now();
+    const rutResult = await this.checkRutsRegistrationBatch(ruts, eventType);
+
+    const fallbackOwnershipAvailability = await this.applyGuardianOwnershipAvailability({
+      tutorGuardianId,
+      email,
+      phone,
+      emailAvailable: true,
+      phoneAvailable: true,
+    });
+
+    const fallbackResult: PrecheckResult = {
+      rutRegisteredByValue: rutResult,
+      emailAvailable: fallbackOwnershipAvailability.emailAvailable,
+      phoneAvailable: fallbackOwnershipAvailability.phoneAvailable,
+      source: 'mongo-fallback',
+    };
+
+    this.logger.warn(
+      JSON.stringify({
+        event: 'reservation.precheck',
+        requestId: requestId || null,
+        eventType,
+        source: fallbackResult.source,
+        rutCount: ruts.length,
+        email: email ? this.maskEmail(email) : null,
+        phone: phone ? this.maskPhone(phone) : null,
+        registeredCount: Object.values(fallbackResult.rutRegisteredByValue).filter(Boolean).length,
+        emailAvailable: fallbackResult.emailAvailable,
+        phoneAvailable: fallbackResult.phoneAvailable,
+        durationMs: Date.now() - fallbackStartedAt,
+        result: 'ok',
+      }),
+    );
+
+    return fallbackResult;
+  }
 
   async getPatinesDaySummary(date: string) {
     const startOfDay = chileLocalDateTimeToUtc(date, '00:00');
@@ -106,7 +628,7 @@ export class ReservationsService {
                   as: 'dep',
                   in: {
                     name: '$$dep.name',
-                    rut: '$$dep.rut',
+                    age: '$$dep.age',
                     type: 'acompañante',
                   },
                 },
@@ -116,22 +638,6 @@ export class ReservationsService {
         },
       },
       { $unwind: '$participants' },
-      {
-        $addFields: {
-          matchedShoe: {
-            $arrayElemAt: [
-              {
-                $filter: {
-                  input: { $ifNull: ['$metadata.patines', []] },
-                  as: 'p',
-                  cond: { $eq: ['$$p.rut', '$participants.rut'] },
-                },
-              },
-              0,
-            ],
-          },
-        },
-      },
       {
         $facet: {
           porHorario: [
@@ -144,48 +650,8 @@ export class ReservationsService {
                   $push: {
                     nombre: '$participants.name',
                     rut: '$participants.rut',
-                    tallaZapato: { $ifNull: ['$matchedShoe.shoeSize', 'N/A'] },
+                    edad: '$participants.age',
                     tipo: '$participants.type',
-                  },
-                },
-                tallasUsadas: { $push: '$matchedShoe.shoeSize' },
-              },
-            },
-            {
-              $addFields: {
-                tallasFiltered: {
-                  $filter: {
-                    input: '$tallasUsadas',
-                    as: 't',
-                    cond: { $ne: ['$$t', null] },
-                  },
-                },
-              },
-            },
-            { $unwind: { path: '$tallasFiltered', preserveNullAndEmptyArrays: true } },
-            {
-              $group: {
-                _id: { startTime: '$_id', talla: '$tallasFiltered' },
-                startTime: { $first: '$startTime' },
-                durationMinutes: { $first: '$durationMinutes' },
-                personas: { $first: '$personas' },
-                cantidadTalla: { $sum: 1 },
-              },
-            },
-            { $sort: { '_id.startTime': 1, '_id.talla': 1 } },
-            {
-              $group: {
-                _id: '$_id.startTime',
-                startTime: { $first: '$startTime' },
-                durationMinutes: { $first: '$durationMinutes' },
-                personas: { $first: '$personas' },
-                resumenTallas: {
-                  $push: {
-                    $cond: [
-                      { $ne: ['$_id.talla', null] },
-                      { talla: '$_id.talla', cantidad: '$cantidadTalla' },
-                      '$$REMOVE',
-                    ],
                   },
                 },
               },
@@ -198,55 +664,7 @@ export class ReservationsService {
                 duracionMinutos: '$durationMinutes',
                 totalPersonas: { $size: '$personas' },
                 personas: 1,
-                resumenTallas: 1,
-              },
-            },
-          ],
-          resumenGeneral: [
-            {
-              $group: {
-                _id: null,
-                totalPersonas: { $sum: 1 },
-                tallas: { $push: '$matchedShoe.shoeSize' },
-              },
-            },
-            {
-              $addFields: {
-                tallasFiltered: {
-                  $filter: {
-                    input: '$tallas',
-                    as: 't',
-                    cond: { $ne: ['$$t', null] },
-                  },
-                },
-              },
-            },
-            { $unwind: { path: '$tallasFiltered', preserveNullAndEmptyArrays: false } },
-            {
-              $group: {
-                _id: '$tallasFiltered',
-                totalPersonas: { $first: '$totalPersonas' },
-                cantidad: { $sum: 1 },
-              },
-            },
-            { $sort: { _id: 1 } },
-            {
-              $group: {
-                _id: null,
-                totalPersonas: { $first: '$totalPersonas' },
-                resumenTallasGeneral: {
-                  $push: {
-                    talla: '$_id',
-                    cantidad: '$cantidad',
-                  },
-                },
-              },
-            },
-            {
-              $project: {
-                _id: 0,
-                totalPersonasDia: '$totalPersonas',
-                resumenTallasGeneral: 1,
+                resumenTallas: [],
               },
             },
           ],
@@ -264,9 +682,7 @@ export class ReservationsService {
             totalPersonasDia: {
               $ifNull: [{ $arrayElemAt: ['$totalGeneral.totalPersonasDia', 0] }, 0],
             },
-            resumenTallasGeneral: {
-              $ifNull: [{ $arrayElemAt: ['$resumenGeneral.resumenTallasGeneral', 0] }, []],
-            },
+            resumenTallasGeneral: [],
           },
         },
       },
@@ -323,9 +739,6 @@ export class ReservationsService {
       throw new ConflictException('No hay suficientes cupos disponibles para esta reserva.');
     }
 
-    // Obtener información del tutor para su RUT
-    const guardian = await this.guardiansService.findById(dto.guardianId);
-
     // 5. Validar si ya existe reserva activa o concluida para el evento específico en el historial
 
     // A. Validación del tutor como creador de reserva (Límite existente)
@@ -347,60 +760,6 @@ export class ReservationsService {
       throw new ConflictException(
         'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
       );
-    }
-
-    // B. Validación: ¿El tutor (si participa) ya está registrado como ACOMPAÑANTE en otra reserva?
-    if (dto.guardianParticipates) {
-      const tutorRegisteredAsDependent = await this.reservationModel.exists({
-        eventType: schedule.eventType,
-        state_reserve: true,
-        'attendingDependents.rut': guardian.rut,
-      });
-
-      if (tutorRegisteredAsDependent) {
-        this.logger.warn(`Conflicto al encolar: El tutor ${guardian.rut} ya participa como acompañante en otra reserva.`);
-        throw new ConflictException(
-          'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
-        );
-      }
-    }
-
-    const attendingRuts = dto.attendingDependents?.map((d) => d.rut) || [];
-    if (attendingRuts.length > 0) {
-      // C. Validación: ¿Alguno de los acompañantes ya está registrado como ACOMPAÑANTE en otra reserva?
-      const duplicateDependentReservation = await this.reservationModel.findOne({
-        eventType: schedule.eventType,
-        state_reserve: true,
-        'attendingDependents.rut': { $in: attendingRuts },
-      });
-
-      if (duplicateDependentReservation) {
-        const duplicateRut = duplicateDependentReservation.attendingDependents.map((d) => d.rut).find((rut) => attendingRuts.includes(rut));
-        this.logger.warn(`Conflicto al encolar: El acompañante con RUT ${duplicateRut} ya tiene una reserva activa o concluida para el evento ${schedule.eventType}.`);
-        throw new ConflictException(
-          'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
-        );
-      }
-
-      // D. Validación: ¿Alguno de los acompañantes ya está registrado como TUTOR en otra reserva?
-      const matchingGuardians = await this.guardiansService.findManyByRuts(attendingRuts);
-      const dependentGuardianIds = matchingGuardians.map((g) => g._id);
-
-      if (dependentGuardianIds.length > 0) {
-        const dependentGuardianIdVariants = dependentGuardianIds.flatMap((id) => [id, id.toString()]);
-        const duplicateGuardianReservation = await this.reservationModel.collection.findOne({
-          eventType: schedule.eventType,
-          state_reserve: true,
-          guardianId: { $in: dependentGuardianIdVariants },
-        });
-
-        if (duplicateGuardianReservation) {
-          this.logger.warn(`Conflicto al encolar: Uno de los acompañantes ya es tutor y tiene una reserva activa.`);
-          throw new ConflictException(
-            'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
-          );
-        }
-      }
     }
 
     const jobName = 'process-single-reservation';
@@ -464,57 +823,9 @@ export class ReservationsService {
 
     const attendingDependentsCount = dto.attendingDependents.length;
 
-    const attendingRuts = dto.attendingDependents.map((dependent) => dependent.rut);
-    const uniqueAttendingRuts = new Set(attendingRuts);
-    if (uniqueAttendingRuts.size !== attendingRuts.length) {
-      this.logger.warn(`RUTs duplicados en la reserva para guardianId=${guardianId}.`);
-      throw new BadRequestException('No se permiten RUTs duplicados en asistentes.');
-    }
-
-    // Ya no se requiere validar que los acompañantes pertenezcan rígidamente al inscrito.
-    // Esta validación restrictiva ha sido removida para flexibilizar grupos familiares.
-
     if (attendingDependentsCount > schedule.maxDependentsPerReservation) {
       this.logger.warn(`Exceso de cargas para guardianId=${guardianId} en scheduleId=${dto.scheduleId}.`);
       throw new BadRequestException(`Máximo ${schedule.maxDependentsPerReservation} cargas permitidas.`);
-    }
-
-    if (dto.metadata?.eventType === 'patines') {
-      const patines = dto.metadata.patines;
-      if (!Array.isArray(patines)) {
-        throw new BadRequestException('Para evento patines, metadata.patines es obligatorio.');
-      }
-
-      const patinesRuts: string[] = [];
-      for (const item of patines) {
-        if (!item || typeof item !== 'object') {
-          throw new BadRequestException('Cada elemento de metadata.patines debe ser un objeto valido.');
-        }
-
-        const { rut, shoeSize } = item as { rut?: unknown; shoeSize?: unknown };
-
-        if (typeof rut !== 'string' || rut.trim().length === 0) {
-          throw new BadRequestException('Cada elemento de metadata.patines debe incluir un rut valido.');
-        }
-
-        if (typeof shoeSize !== 'number' || !Number.isFinite(shoeSize) || shoeSize <= 0) {
-          throw new BadRequestException('Cada elemento de metadata.patines debe incluir shoeSize numerico mayor a 0.');
-        }
-
-        patinesRuts.push(rut);
-      }
-
-      const expectedRuts = [...attendingRuts];
-      if (dto.guardianParticipates) {
-        expectedRuts.push(guardian.rut);
-      }
-
-      const uniquePatinesRuts = new Set(patinesRuts);
-      const hasExactPatinesMatch = patinesRuts.length === expectedRuts.length && uniquePatinesRuts.size === patinesRuts.length && expectedRuts.every((rut) => uniquePatinesRuts.has(rut));
-
-      if (!hasExactPatinesMatch) {
-        throw new BadRequestException('metadata.patines debe coincidir 1:1 con los asistentes (incluyendo al inscrito si participa) por RUT.');
-      }
     }
 
     const spotsToConsume = (dto.guardianParticipates ? 1 : 0) + attendingDependentsCount;
@@ -562,67 +873,6 @@ export class ReservationsService {
           throw new ConflictException(
             'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
           );
-        }
-
-        // B. Validación: ¿El tutor (si participa) ya está registrado como ACOMPAÑANTE en otra reserva?
-        if (dto.guardianParticipates) {
-          const tutorRegisteredAsDependent = await this.reservationModel
-            .exists({
-              eventType: scheduleInTx.eventType,
-              state_reserve: true,
-              'attendingDependents.rut': guardian.rut,
-            })
-            .session(session);
-
-          if (tutorRegisteredAsDependent) {
-            this.logger.warn(`Conflicto: El tutor ${guardian.rut} ya participa como acompañante en otra reserva.`);
-            throw new ConflictException(
-              'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
-            );
-          }
-        }
-
-        // Validar en la transacción que ningún acompañante ya tenga una reserva activa o concluida para el mismo evento
-        if (attendingRuts.length > 0) {
-          // C. Validación: ¿Alguno de los acompañantes ya está registrado como ACOMPAÑANTE en otra reserva?
-          const duplicateDependentReservation = await this.reservationModel
-            .findOne({
-              eventType: scheduleInTx.eventType,
-              state_reserve: true,
-              'attendingDependents.rut': { $in: attendingRuts },
-            })
-            .session(session);
-
-          if (duplicateDependentReservation) {
-            const duplicateRut = duplicateDependentReservation.attendingDependents.map((d) => d.rut).find((rut) => attendingRuts.includes(rut));
-            this.logger.warn(`Conflicto: El acompañante con RUT ${duplicateRut} ya tiene una reserva activa o concluida para el evento ${scheduleInTx.eventType}.`);
-            throw new ConflictException(
-              'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
-            );
-          }
-
-          // D. Validación: ¿Alguno de los acompañantes ya está registrado como TUTOR en otra reserva?
-          const matchingGuardians = await this.guardiansService.findManyByRuts(attendingRuts);
-          const dependentGuardianIds = matchingGuardians.map((g) => g._id);
-
-          if (dependentGuardianIds.length > 0) {
-            const dependentGuardianIdVariants = dependentGuardianIds.flatMap((id) => [id, id.toString()]);
-            const duplicateGuardianReservation = await this.reservationModel.collection.findOne(
-              {
-                eventType: scheduleInTx.eventType,
-                state_reserve: true,
-                guardianId: { $in: dependentGuardianIdVariants },
-              },
-              { session },
-            );
-
-            if (duplicateGuardianReservation) {
-              this.logger.warn(`Conflicto: Uno de los acompañantes ya es tutor y tiene una reserva activa.`);
-              throw new ConflictException(
-                'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
-              );
-            }
-          }
         }
 
         const updatedScheduleInTx = await this.scheduleModel.findOneAndUpdate(
@@ -688,15 +938,23 @@ export class ReservationsService {
     this.schedulesGateway.broadcastSpotsUpdate(finalSchedule._id.toString(), finalSchedule.availableSpots);
 
     this.logger.log(`Reserva creada exitosamente: reservationId=${finalReservation._id}`);
+    await this.updateEventIdentityCounters({
+      eventType: finalReservation.eventType || '',
+      ruts: [guardian.rut],
+      email: guardian.email,
+      phone: guardian.phone,
+      delta: 1,
+      context: 'createReservation',
+    });
     await this.sendReservationConfirmationNotifications(guardian, finalReservationStartTime, dto.attendingDependents, finalReservation._id.toString(), finalReservation.eventType);
 
-    // Programar la expiración automática en 5 minutos con reintentos para alta concurrencia
+    // Programar la expiración automática segun configuracion (RESERVATION_CONFIRM_TTL_SEC)
     try {
       await this.reservationQueue.add(
         'expire-reservation',
         { reservationId: finalReservation._id.toString() },
         {
-          delay: 5 * 60 * 1000, // 5 minutos (300000 ms)
+          delay: this.reservationConfirmTtlSec * 1000,
           attempts: 3, // Intentar hasta 3 veces si falla por WriteConflict
           backoff: {
             type: 'exponential',
@@ -713,63 +971,15 @@ export class ReservationsService {
   }
 
   async checkRutRegistration(rut: string, eventType: string): Promise<{ registered: boolean }> {
-    const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
-    if (clean.length < 2) {
-      return { registered: false };
-    }
-    const body = clean.slice(0, -1);
-    const dv = clean.slice(-1);
-    const formatted = `${body}-${dv}`;
-
-    // Generar formato con puntos
-    let formattedBody = '';
-    let count = 0;
-    for (let i = body.length - 1; i >= 0; i--) {
-      formattedBody = body[i] + formattedBody;
-      count++;
-      if (count % 3 === 0 && i !== 0) {
-        formattedBody = '.' + formattedBody;
-      }
-    }
-    const dotted = `${formattedBody}-${dv}`;
-
-    const rutsToCheck = [clean, formatted, dotted];
-
-    // 1. Verificar si está registrado como acompañante en alguna reserva activa
-    const dependentExists = await this.reservationModel.exists({
-      eventType,
-      state_reserve: true,
-      'attendingDependents.rut': { $in: rutsToCheck },
-    });
-
-    if (dependentExists) {
-      return { registered: true };
-    }
-
-    // 2. Verificar si está registrado como tutor en alguna reserva activa
-    const matchingGuardians = await this.guardiansService.findManyByRuts([clean]);
-    const guardianIds = matchingGuardians.map((g) => g._id);
-
-    if (guardianIds.length > 0) {
-      const guardianIdVariants = guardianIds.flatMap((id) => [id, id.toString()]);
-      const guardianExists = await this.reservationModel.collection.findOne({
-        eventType,
-        state_reserve: true,
-        guardianId: { $in: guardianIdVariants },
-      });
-
-      if (guardianExists) {
-        return { registered: true };
-      }
-    }
-
-    return { registered: false };
+    const normalizedRut = this.normalizeRut(rut);
+    const batchResult = await this.checkRutsRegistrationBatch([normalizedRut], eventType);
+    return { registered: Boolean(batchResult[normalizedRut]) };
   }
 
   private async sendReservationConfirmationNotifications(
     guardian: { name: string; email: string; phone: string; rut: string },
     startTime: Date,
-    attendingDependents: Array<{ name: string; rut: string; age?: number }>,
+    attendingDependents: Array<{ name: string; age?: number }>,
     reservationId: string,
     eventType?: string,
   ) {
@@ -786,7 +996,16 @@ export class ReservationsService {
     ];
 
     try {
-      await this.mailService.sendReservationConfirmation(guardian.email, guardian.name, scheduleDateTime, mailCompanions, reservationId, eventType);
+      const qrBuffer = await this.getQrCodeBuffer(reservationId);
+      await this.mailService.sendReservationConfirmation(
+        guardian.email,
+        guardian.name,
+        scheduleDateTime,
+        mailCompanions,
+        reservationId,
+        qrBuffer,
+        eventType,
+      );
     } catch (error) {
       this.logger.error(`No se pudo enviar correo de confirmacion para guardianId=${guardian.email}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -794,7 +1013,7 @@ export class ReservationsService {
     // 2. Integrantes del WhatsApp (Apoderado al inicio)
     const listItems: string[] = [`- ${guardian.name} (${guardian.rut})`];
     attendingDependents.forEach((dep) => {
-      listItems.push(`- ${dep.name} (${dep.rut})`);
+      listItems.push(`- ${dep.name}${dep.age ? ` (Edad: ${dep.age} años)` : ''}`);
     });
     const companionsText = listItems.join('\n');
 
@@ -806,9 +1025,10 @@ export class ReservationsService {
         eventTitle = 'tu reserva en la Pista de Hielo! ❄️⛸️';
       }
 
+      const confirmTtlLabel = this.getReservationConfirmTtlLabel();
       const message =
         `¡Estás a un paso de confirmar ${eventTitle}\n\n` +
-        `Debes confirmar tu reserva dentro de los próximos 5 minutos. Si no la confirmas, los cupos se liberarán automáticamente.\n\n` +
+        `Debes confirmar tu reserva dentro de los próximos ${confirmTtlLabel}. Si no la confirmas, los cupos se liberarán automáticamente.\n\n` +
         `📅 *Fecha y hora:* ${scheduleDateTime} hrs.\n` +
         `👥 *Integrantes:*\n${companionsText || '- Sin acompañantes'}\n\n` +
         `👇 *Presiona el enlace para confirmar:*\n` +
@@ -890,6 +1110,7 @@ export class ReservationsService {
     const session = await this.reservationModel.db.startSession();
     let updatedScheduleAfterDelete: Schedule | null = null;
     let removedReservationScheduleId: string | null = null;
+    const removeContext: { identityPayload?: ReservationIdentityPayload } = {};
 
     try {
       await session.withTransaction(async () => {
@@ -905,6 +1126,11 @@ export class ReservationsService {
             this.logger.warn(`Guardian intentando eliminar reserva de otro inscrito (${reservation.guardianId}).`);
             throw new ForbiddenException('No puedes eliminar una reserva de otro inscrito.');
           }
+        }
+
+        const identityPayload = await this.getIdentityPayloadForReservation(reservation);
+        if (identityPayload) {
+          removeContext.identityPayload = identityPayload;
         }
 
         await this.reservationModel.findByIdAndDelete(id, { session });
@@ -928,6 +1154,17 @@ export class ReservationsService {
     }
 
     this.logger.log(`Reserva eliminada: reservationId=${id}`);
+
+    if (removeContext.identityPayload) {
+      await this.updateEventIdentityCounters({
+        eventType: removeContext.identityPayload.eventType,
+        ruts: removeContext.identityPayload.ruts,
+        email: removeContext.identityPayload.email,
+        phone: removeContext.identityPayload.phone,
+        delta: -1,
+        context: 'removeReservation',
+      });
+    }
 
     const finalUpdatedScheduleAfterDelete = updatedScheduleAfterDelete as Schedule | null;
     const finalRemovedReservationScheduleId = removedReservationScheduleId;
@@ -957,74 +1194,83 @@ export class ReservationsService {
     const guardian = await this.guardiansService.findById(reservation.guardianId.toString());
     const schedule = await this.scheduleModel.findById(reservation.scheduleId).exec();
 
+    return {
+      reservation: this.buildReservationCheckInView(reservation, guardian, schedule),
+    };
+  }
+
+  private buildReservationCheckInView(reservation: Reservation, guardian: any, schedule: Schedule | null) {
+    
     const now = new Date();
     const startTime = schedule ? new Date(schedule.startTime) : null;
     const endTime = startTime && schedule ? new Date(startTime.getTime() + (schedule.durationMinutes || 30) * 60000) : null;
     const isExpired = endTime ? endTime < now : false;
 
     return {
-      reservation: {
-        id: reservation._id.toString(),
-        guardianName: guardian.name,
-        guardianRut: guardian.rut,
-        guardianEmail: guardian.email,
-        guardianPhone: guardian.phone,
-        startTime,
-        durationMinutes: schedule?.durationMinutes ?? 30,
-        attendingDependents: reservation.attendingDependents,
-        isCheckedIn: reservation.isCheckedIn,
-        checkInAt: reservation.checkInAt,
-        isExpired,
-        status: isExpired ? 'EXPIRADA' : reservation.isCheckedIn ? 'CHECKED_IN' : 'VIGENTE',
-        eventType: schedule?.eventType,
-      },
+      id: reservation._id.toString(),
+      guardianName: guardian.name,
+      guardianRut: guardian.rut,
+      guardianEmail: guardian.email,
+      guardianPhone: guardian.phone,
+      startTime,
+      durationMinutes: schedule?.durationMinutes ?? 30,
+      attendingDependents: reservation.attendingDependents,
+      isCheckedIn: reservation.isCheckedIn,
+      checkInAt: reservation.checkInAt,
+      isExpired,
+      status: isExpired ? 'EXPIRADA' : reservation.isCheckedIn ? 'CHECKED_IN' : 'VIGENTE',
+      eventType: schedule?.eventType,
     };
   }
 
-  async performCheckIn(id: string, pin: string) {
-    const statusResult = await this.getReservationCheckInStatus(id);
-    const { reservation } = statusResult;
-
-    const expectedPin = process.env.INSPECTOR_PIN || '1234';
+  private assertInspectorPin(pin: string): void {
+    const expectedPin = this.configService.get<string>('INSPECTOR_PIN') || '1234';
     if (!pin || pin.trim() !== expectedPin.trim()) {
       throw new ForbiddenException('PIN de inspector incorrecto o no suministrado.');
     }
+  }
 
-    if (reservation.isCheckedIn) {
+  async performCheckIn(id: string, pin: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Id de reserva invalido');
+    }
+    this.assertInspectorPin(pin);
+
+    const dbReservation = await this.reservationModel.findById(id).exec();
+    if (!dbReservation || dbReservation.state_reserve === false) {
+      throw new NotFoundException('Reserva no encontrada o inactiva');
+    }
+
+    const guardian = await this.guardiansService.findById(dbReservation.guardianId.toString());
+    const schedule = await this.scheduleModel.findById(dbReservation.scheduleId).exec();
+    const reservationView = this.buildReservationCheckInView(dbReservation, guardian, schedule);
+
+    if (reservationView.isCheckedIn) {
       return {
         success: true,
         message: 'El check-in ya habia sido realizado previamente.',
-        reservation,
+        reservation: reservationView,
       };
     }
 
-    if (reservation.isExpired) {
+    if (reservationView.isExpired) {
       throw new BadRequestException('El horario de la reserva ya expiro.');
     }
 
-    // Actualizar en BD
-    const dbReservation = await this.reservationModel.findById(id);
-    if (!dbReservation) {
-      throw new NotFoundException('Reserva no encontrada');
-    }
     dbReservation.isCheckedIn = true;
     dbReservation.checkInAt = new Date();
     await dbReservation.save();
 
-    // Obtener estado actualizado
-    const updatedStatus = await this.getReservationCheckInStatus(id);
+    const updatedReservationView = this.buildReservationCheckInView(dbReservation, guardian, schedule);
     return {
       success: true,
       message: 'Check-in realizado exitosamente.',
-      reservation: updatedStatus.reservation,
+      reservation: updatedReservationView,
     };
   }
 
   async getReservationCheckInDetails(id: string, pin: string) {
-    const expectedPin = process.env.INSPECTOR_PIN || '1234';
-    if (!pin || pin.trim() !== expectedPin.trim()) {
-      throw new ForbiddenException('PIN de inspector incorrecto o no suministrado.');
-    }
+    this.assertInspectorPin(pin);
     return this.getReservationCheckInStatus(id);
   }
 
@@ -1262,7 +1508,7 @@ export class ReservationsService {
                   if (deps.length > 0) {
                     let html = '<ul>';
                     deps.forEach(function(d) {
-                      html += '<li><strong>' + d.name + '</strong> (' + d.rut + ')</li>';
+                      html += '<li><strong>' + d.name + '</strong>' + (d.age ? ' (Edad: ' + d.age + ' años)' : '') + '</li>';
                     });
                     html += '</ul>';
                     container.innerHTML = html;
@@ -1699,7 +1945,7 @@ export class ReservationsService {
     }
 
     if (reservation.checkMail === false) {
-      throw new ConflictException('Esta reserva expiró por falta de confirmación dentro de 5 minutos y los cupos ya fueron liberados.');
+      throw new ConflictException(`Esta reserva expiró por falta de confirmación dentro de ${this.getReservationConfirmTtlLabel()} y los cupos ya fueron liberados.`);
     }
 
     if (!reservation.state_reserve) {
@@ -1709,10 +1955,6 @@ export class ReservationsService {
     reservation.checkMail = true;
     reservation.checkMailDate = new Date();
     const savedReservation = await reservation.save();
-
-    this.sendQrNotifications(savedReservation).catch((err) => {
-      this.logger.error(`Error al enviar notificaciones de QR post-confirmación: ${err.message}`);
-    });
 
     return savedReservation;
   }
@@ -1725,6 +1967,7 @@ export class ReservationsService {
     const session = await this.reservationModel.db.startSession();
     let updatedScheduleAfterCancel: any = null;
     let cancelledReservation: any = null;
+    const cancelContext: { identityPayload?: ReservationIdentityPayload } = {};
 
     try {
       await session.withTransaction(async () => {
@@ -1739,11 +1982,16 @@ export class ReservationsService {
         }
 
         if (reservation.checkMail === false) {
-          throw new ConflictException('Esta reserva ya expiró por falta de confirmación dentro de 5 minutos y sus cupos ya fueron liberados.');
+          throw new ConflictException(`Esta reserva ya expiró por falta de confirmación dentro de ${this.getReservationConfirmTtlLabel()} y sus cupos ya fueron liberados.`);
         }
 
         if (!reservation.state_reserve) {
           throw new BadRequestException('Esta reserva ya fue cancelada.');
+        }
+
+        const identityPayload = await this.getIdentityPayloadForReservation(reservation);
+        if (identityPayload) {
+          cancelContext.identityPayload = identityPayload;
         }
 
         // Marcar la reserva como inactiva y registrar la cancelación por correo
@@ -1774,6 +2022,17 @@ export class ReservationsService {
       this.schedulesGateway.broadcastSpotsUpdate(cancelledReservation.scheduleId.toString(), updatedScheduleAfterCancel.availableSpots);
     }
 
+    if (cancelContext.identityPayload) {
+      await this.updateEventIdentityCounters({
+        eventType: cancelContext.identityPayload.eventType,
+        ruts: cancelContext.identityPayload.ruts,
+        email: cancelContext.identityPayload.email,
+        phone: cancelContext.identityPayload.phone,
+        delta: -1,
+        context: 'cancelEmail',
+      });
+    }
+
     if (!cancelledReservation) {
       throw new InternalServerErrorException('No se pudo cancelar la reserva.');
     }
@@ -1791,6 +2050,7 @@ export class ReservationsService {
     let updatedScheduleAfterExpiry: any = null;
     let expiredReservation: any = null;
     let skipReason = '';
+    const expireContext: { identityPayload?: ReservationIdentityPayload } = {};
 
     try {
       await session.withTransaction(async () => {
@@ -1811,6 +2071,11 @@ export class ReservationsService {
         if (!reservation.state_reserve) {
           skipReason = 'Reserva ya se encuentra inactiva';
           return;
+        }
+
+        const identityPayload = await this.getIdentityPayloadForReservation(reservation);
+        if (identityPayload) {
+          expireContext.identityPayload = identityPayload;
         }
 
         // Expirar la reserva: setear state_reserve = false
@@ -1846,111 +2111,22 @@ export class ReservationsService {
     }
 
     if (updatedScheduleAfterExpiry && expiredReservation) {
-      this.logger.log(`Reserva ${id} EXPIRADA automáticamente por falta de confirmación en 30 minutos. Cupos devueltos al scheduleId=${expiredReservation.scheduleId}. Disponibles: ${updatedScheduleAfterExpiry.availableSpots}`);
+      this.logger.log(`Reserva ${id} EXPIRADA automáticamente por falta de confirmación en ${this.getReservationConfirmTtlLabel()}. Cupos devueltos al scheduleId=${expiredReservation.scheduleId}. Disponibles: ${updatedScheduleAfterExpiry.availableSpots}`);
       this.schedulesGateway.broadcastSpotsUpdate(expiredReservation.scheduleId.toString(), updatedScheduleAfterExpiry.availableSpots);
+      if (expireContext.identityPayload) {
+        await this.updateEventIdentityCounters({
+          eventType: expireContext.identityPayload.eventType,
+          ruts: expireContext.identityPayload.ruts,
+          email: expireContext.identityPayload.email,
+          phone: expireContext.identityPayload.phone,
+          delta: -1,
+          context: 'expireReservation',
+        });
+      }
       return { success: true, message: 'Reserva expirada automáticamente por inactividad y cupos liberados.' };
     }
 
     return { success: false, message: 'No se pudo expirar la reserva.' };
   }
 
-  private async sendQrNotifications(reservation: Reservation) {
-    const guardian = await this.guardiansService.findById(reservation.guardianId.toString());
-    const schedule = await this.scheduleModel.findById(reservation.scheduleId).exec();
-    if (!schedule) {
-      this.logger.error(`Horario no encontrado para enviar QR de la reserva ${reservation._id}`);
-      return;
-    }
-
-    const scheduleDateTime = this.formatDateTime(schedule.startTime);
-    const baseUrl = (this.configService.get<string>('BACKEND_URL') || 'http://localhost:3500').trim();
-
-    const qrBuffer = await this.getQrCodeBuffer(reservation._id.toString());
-
-    // 1. Enviar Correo Final con QR Inline (CID)
-    try {
-      const mailCompanions = [
-        {
-          name: guardian.name,
-          rut: guardian.rut,
-        },
-        ...reservation.attendingDependents,
-      ];
-
-      await this.mailService.sendActiveReservationMail(guardian.email, guardian.name, scheduleDateTime, mailCompanions, reservation._id.toString(), qrBuffer, reservation.eventType);
-      this.logger.log(`Correo con QR enviado con éxito para la reserva confirmada: ${reservation._id}`);
-    } catch (mailErr) {
-      this.logger.error(`Error al enviar correo con QR para la reserva ${reservation._id}: ${mailErr instanceof Error ? mailErr.message : String(mailErr)}`);
-    }
-
-    // 2. Enviar WhatsApp Final con QR de Imagen por API de Meta
-    const qrUrl = `${baseUrl}/reservations/${reservation._id}/qrcode`;
-
-    // Títulos y Emojis dinámicos por tipo de evento
-    let titleMessage = '¡Tu reserva ha sido confirmada! 🎉';
-    let eventTitle = 'tu reserva';
-    if (reservation.eventType === 'selva') {
-      titleMessage = '¡Tu reserva para Selva Viva ha sido confirmada! 🦎🦜';
-      eventTitle = 'tu reserva en Selva Viva! 🦎🦜';
-    } else if (reservation.eventType === 'patines') {
-      titleMessage = '¡Tu reserva para la Pista de Hielo ha sido confirmada! ❄️⛸️';
-      eventTitle = 'tu reserva en la Pista de Hielo! ❄️⛸️';
-    }
-
-    // Formatear Fecha y Hora exactamente como se pide (Viernes 19 de junio de 2026 · 12:00 hrs.)
-    const startTimeDate = new Date(schedule.startTime);
-    const optionsDate: Intl.DateTimeFormatOptions = {
-      timeZone: 'America/Santiago',
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-    };
-    const optionsTime: Intl.DateTimeFormatOptions = {
-      timeZone: 'America/Santiago',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    };
-    const dateLabel = startTimeDate.toLocaleDateString('es-CL', optionsDate);
-    const timeLabel = startTimeDate.toLocaleTimeString('es-CL', optionsTime);
-    const capitalizedDateLabel = dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1);
-    const formattedDateTime = `${capitalizedDateLabel} · ${timeLabel} hrs.`;
-
-    // Integrantes del Grupo
-    const groupItems: string[] = [];
-    if (reservation.guardianParticipates) {
-      groupItems.push(`* ${guardian.name} (${guardian.rut})`);
-    }
-    reservation.attendingDependents.forEach((dep) => {
-      groupItems.push(`* ${dep.name} ${dep.rut ? `(${dep.rut})` : ''}`);
-    });
-    const groupText = groupItems.join('\n');
-
-    // Mensaje estructurado de WhatsApp
-    const wspMessage =
-      `${titleMessage}\n\n` +
-      `📅 *Fecha y hora:*\n` +
-      `${formattedDateTime}\n\n` +
-      `*Grupo registrado:*\n` +
-      `${groupText}\n\n` +
-      `🎫 *Código QR de ingreso:*\n` +
-      `Puedes descargarlo aquí: ${qrUrl}\n\n` +
-      `⚠️ *Importante:*\n` +
-      `* Llega al menos 20 minutos antes de tu horario.\n` +
-      `* Presenta este código QR al ingresar.\n` +
-      `* Revisa las normas de uso antes de tu visita.\n\n` +
-      `¡Te esperamos! 🐍🐢`;
-
-    try {
-      const wspMetaStatus = this.wspMetaService.getStatus();
-      if (wspMetaStatus.enabled && wspMetaStatus.configured) {
-        await this.wspMetaService.sendTextMessage(guardian.phone, wspMessage);
-        await this.wspMetaService.sendImageMessage(guardian.phone, qrUrl, `Código QR de acceso para ${eventTitle}`);
-        this.logger.log(`WhatsApp con QR enviado con éxito para la reserva confirmada: ${reservation._id}`);
-      }
-    } catch (wspErr) {
-      this.logger.error(`Error al enviar WhatsApp con QR para la reserva ${reservation._id}: ${wspErr instanceof Error ? wspErr.message : String(wspErr)}`);
-    }
-  }
 }

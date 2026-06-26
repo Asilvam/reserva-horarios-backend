@@ -7,10 +7,7 @@ export class AttendingDependent {
   name: string;
 
   @Prop({ required: true })
-  rut: string;
-
-  @Prop({ required: false })
-  age?: number;
+  age: number;
 }
 
 export const AttendingDependentSchema = SchemaFactory.createForClass(AttendingDependent);

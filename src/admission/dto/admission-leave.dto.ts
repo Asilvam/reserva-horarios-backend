@@ -1,0 +1,14 @@
+import { IsString, Matches } from 'class-validator';
+
+const EVENT_TYPE_REGEX = /^[a-z0-9_-]{2,30}$/i;
+
+export class AdmissionLeaveDto {
+  @IsString()
+  @Matches(EVENT_TYPE_REGEX, {
+    message: 'eventType must contain 2-30 alphanumeric characters, dashes or underscores',
+  })
+  eventType: string;
+
+  @IsString()
+  sessionId: string;
+}
