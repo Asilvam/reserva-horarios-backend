@@ -22,6 +22,35 @@ type AdmissionEnterResult =
       queueSize: number;
     };
 
+type WaitlistAddResult =
+  | {
+      added: true;
+      queueSize: number;
+      position: number;
+    }
+  | {
+      added: false;
+      queueSize: number;
+    };
+
+const ADD_TO_WAITLIST_SCRIPT = `
+local queueSize = redis.call('ZCARD', KEYS[1])
+local maxQueueSize = tonumber(ARGV[1])
+
+if queueSize >= maxQueueSize then
+  return {0, queueSize, 0}
+end
+
+redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
+redis.call('HMSET', KEYS[2], 'status', 'WAITING', 'createdAt', ARGV[4])
+redis.call('EXPIRE', KEYS[2], tonumber(ARGV[5]))
+
+local rank = redis.call('ZRANK', KEYS[1], ARGV[3])
+local updatedQueueSize = redis.call('ZCARD', KEYS[1])
+
+return {1, updatedQueueSize, rank + 1}
+`;
+
 @Injectable()
 export class AdmissionService {
   private readonly logger = new Logger(AdmissionService.name);
@@ -171,6 +200,43 @@ export class AdmissionService {
     return this.redisService.getClient().zcard(this.waitlistKey(eventType));
   }
 
+  private async addToWaitlistAtomically(params: {
+    waitlistKey: string;
+    sessionKey: string;
+    sessionId: string;
+  }): Promise<WaitlistAddResult> {
+    const redis = this.redisService.getClient();
+    const now = Date.now().toString();
+    const result = (await redis.eval(
+      ADD_TO_WAITLIST_SCRIPT,
+      2,
+      params.waitlistKey,
+      params.sessionKey,
+      this.waitlistMaxPerEvent.toString(),
+      now,
+      params.sessionId,
+      now,
+      this.waitlistSessionTtlSec.toString(),
+    )) as Array<number | string>;
+
+    const added = Number(result[0]) === 1;
+    const queueSize = Number(result[1]);
+    const position = Number(result[2]);
+
+    if (!added) {
+      return {
+        added: false,
+        queueSize: Number.isFinite(queueSize) ? queueSize : this.waitlistMaxPerEvent,
+      };
+    }
+
+    return {
+      added: true,
+      queueSize: Number.isFinite(queueSize) ? queueSize : 1,
+      position: Number.isFinite(position) ? position : 1,
+    };
+  }
+
   private statusLogKey(eventType: string, sessionId: string, state: 'writing' | 'waiting' | 'processing') {
     return `${eventType}:${sessionId}:${state}`;
   }
@@ -264,8 +330,14 @@ export class AdmissionService {
       };
     }
 
-    const currentQueueSize = await this.getQueueSize(eventType, requestId);
-    if (currentQueueSize >= this.waitlistMaxPerEvent) {
+    await this.cleanupStaleWaitlist(eventType, requestId);
+    const waitlistAddResult = await this.addToWaitlistAtomically({
+      waitlistKey,
+      sessionKey,
+      sessionId,
+    });
+
+    if (!waitlistAddResult.added) {
       this.logger.warn(
         JSON.stringify({
           event: 'admission.enter',
@@ -274,7 +346,7 @@ export class AdmissionService {
           sessionId,
           result: 'waitlist_full',
           writersActive,
-          queueSize: currentQueueSize,
+          queueSize: waitlistAddResult.queueSize,
           waitlistMaxPerEvent: this.waitlistMaxPerEvent,
           durationMs: Date.now() - startedAt,
         }),
@@ -291,17 +363,8 @@ export class AdmissionService {
       );
     }
 
-    await redis
-      .multi()
-      .zadd(waitlistKey, Date.now(), sessionId)
-      .hmset(sessionKey, { status: 'WAITING', createdAt: Date.now().toString() })
-      .expire(sessionKey, this.waitlistSessionTtlSec)
-      .exec();
-
-    const rank = await redis.zrank(waitlistKey, sessionId);
-    const queueSizeRaw = await redis.zcard(waitlistKey);
-    const queueSize = Number.isFinite(queueSizeRaw) ? queueSizeRaw : currentQueueSize + 1;
-    const position = (rank ?? 0) + 1;
+    const queueSize = waitlistAddResult.queueSize;
+    const position = waitlistAddResult.position;
     const etaSec = await this.computeEtaSec(eventType, position, writersActive);
 
     this.logger.warn(
