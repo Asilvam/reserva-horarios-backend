@@ -283,7 +283,7 @@ export class AdmissionService {
       throw new HttpException(
         {
           code: 'WAITLIST_FULL',
-          message: 'Sitio sin disponibilidad, intenta más tarde.',
+          message: 'La fila de espera está completa. Inténtalo nuevamente.',
           eventType,
           retryAfterSec: this.retryAfterSec,
         },
