@@ -185,30 +185,6 @@ export class ReservationsService {
       return result;
     }
 
-    const dependentReservations = await this.reservationModel
-      .find({
-        eventType,
-        state_reserve: true,
-        'attendingDependents.rut': { $in: Array.from(variantToCanonical.keys()) },
-      })
-      .select({ attendingDependents: 1 })
-      .lean();
-
-    const registeredDependentVariants = new Set<string>();
-    for (const reservation of dependentReservations) {
-      for (const dependent of reservation.attendingDependents || []) {
-        if (dependent?.rut) {
-          registeredDependentVariants.add(this.normalizeRut(dependent.rut));
-        }
-      }
-    }
-
-    for (const [rut, variants] of canonicalToVariants.entries()) {
-      if (variants.some((variant) => registeredDependentVariants.has(variant))) {
-        result[rut] = true;
-      }
-    }
-
     if (cleanRuts.size === 0) {
       return result;
     }
@@ -329,11 +305,10 @@ export class ReservationsService {
     }
 
     const guardian = await this.guardiansService.findById(reservation.guardianId.toString());
-    const dependentRuts = (reservation.attendingDependents || []).map((dep) => dep.rut).filter(Boolean);
 
     return {
       eventType: reservation.eventType,
-      ruts: [guardian.rut, ...dependentRuts],
+      ruts: [guardian.rut],
       email: guardian.email,
       phone: guardian.phone,
     };
@@ -653,7 +628,7 @@ export class ReservationsService {
                   as: 'dep',
                   in: {
                     name: '$$dep.name',
-                    rut: '$$dep.rut',
+                    age: '$$dep.age',
                     type: 'acompañante',
                   },
                 },
@@ -663,22 +638,6 @@ export class ReservationsService {
         },
       },
       { $unwind: '$participants' },
-      {
-        $addFields: {
-          matchedShoe: {
-            $arrayElemAt: [
-              {
-                $filter: {
-                  input: { $ifNull: ['$metadata.patines', []] },
-                  as: 'p',
-                  cond: { $eq: ['$$p.rut', '$participants.rut'] },
-                },
-              },
-              0,
-            ],
-          },
-        },
-      },
       {
         $facet: {
           porHorario: [
@@ -691,48 +650,8 @@ export class ReservationsService {
                   $push: {
                     nombre: '$participants.name',
                     rut: '$participants.rut',
-                    tallaZapato: { $ifNull: ['$matchedShoe.shoeSize', 'N/A'] },
+                    edad: '$participants.age',
                     tipo: '$participants.type',
-                  },
-                },
-                tallasUsadas: { $push: '$matchedShoe.shoeSize' },
-              },
-            },
-            {
-              $addFields: {
-                tallasFiltered: {
-                  $filter: {
-                    input: '$tallasUsadas',
-                    as: 't',
-                    cond: { $ne: ['$$t', null] },
-                  },
-                },
-              },
-            },
-            { $unwind: { path: '$tallasFiltered', preserveNullAndEmptyArrays: true } },
-            {
-              $group: {
-                _id: { startTime: '$_id', talla: '$tallasFiltered' },
-                startTime: { $first: '$startTime' },
-                durationMinutes: { $first: '$durationMinutes' },
-                personas: { $first: '$personas' },
-                cantidadTalla: { $sum: 1 },
-              },
-            },
-            { $sort: { '_id.startTime': 1, '_id.talla': 1 } },
-            {
-              $group: {
-                _id: '$_id.startTime',
-                startTime: { $first: '$startTime' },
-                durationMinutes: { $first: '$durationMinutes' },
-                personas: { $first: '$personas' },
-                resumenTallas: {
-                  $push: {
-                    $cond: [
-                      { $ne: ['$_id.talla', null] },
-                      { talla: '$_id.talla', cantidad: '$cantidadTalla' },
-                      '$$REMOVE',
-                    ],
                   },
                 },
               },
@@ -745,55 +664,7 @@ export class ReservationsService {
                 duracionMinutos: '$durationMinutes',
                 totalPersonas: { $size: '$personas' },
                 personas: 1,
-                resumenTallas: 1,
-              },
-            },
-          ],
-          resumenGeneral: [
-            {
-              $group: {
-                _id: null,
-                totalPersonas: { $sum: 1 },
-                tallas: { $push: '$matchedShoe.shoeSize' },
-              },
-            },
-            {
-              $addFields: {
-                tallasFiltered: {
-                  $filter: {
-                    input: '$tallas',
-                    as: 't',
-                    cond: { $ne: ['$$t', null] },
-                  },
-                },
-              },
-            },
-            { $unwind: { path: '$tallasFiltered', preserveNullAndEmptyArrays: false } },
-            {
-              $group: {
-                _id: '$tallasFiltered',
-                totalPersonas: { $first: '$totalPersonas' },
-                cantidad: { $sum: 1 },
-              },
-            },
-            { $sort: { _id: 1 } },
-            {
-              $group: {
-                _id: null,
-                totalPersonas: { $first: '$totalPersonas' },
-                resumenTallasGeneral: {
-                  $push: {
-                    talla: '$_id',
-                    cantidad: '$cantidad',
-                  },
-                },
-              },
-            },
-            {
-              $project: {
-                _id: 0,
-                totalPersonasDia: '$totalPersonas',
-                resumenTallasGeneral: 1,
+                resumenTallas: [],
               },
             },
           ],
@@ -811,9 +682,7 @@ export class ReservationsService {
             totalPersonasDia: {
               $ifNull: [{ $arrayElemAt: ['$totalGeneral.totalPersonasDia', 0] }, 0],
             },
-            resumenTallasGeneral: {
-              $ifNull: [{ $arrayElemAt: ['$resumenGeneral.resumenTallasGeneral', 0] }, []],
-            },
+            resumenTallasGeneral: [],
           },
         },
       },
@@ -870,9 +739,6 @@ export class ReservationsService {
       throw new ConflictException('No hay suficientes cupos disponibles para esta reserva.');
     }
 
-    // Obtener información del tutor para su RUT
-    const guardian = await this.guardiansService.findById(dto.guardianId);
-
     // 5. Validar si ya existe reserva activa o concluida para el evento específico en el historial
 
     // A. Validación del tutor como creador de reserva (Límite existente)
@@ -894,60 +760,6 @@ export class ReservationsService {
       throw new ConflictException(
         'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
       );
-    }
-
-    // B. Validación: ¿El tutor (si participa) ya está registrado como ACOMPAÑANTE en otra reserva?
-    if (dto.guardianParticipates) {
-      const tutorRegisteredAsDependent = await this.reservationModel.exists({
-        eventType: schedule.eventType,
-        state_reserve: true,
-        'attendingDependents.rut': guardian.rut,
-      });
-
-      if (tutorRegisteredAsDependent) {
-        this.logger.warn(`Conflicto al encolar: El tutor ${guardian.rut} ya participa como acompañante en otra reserva.`);
-        throw new ConflictException(
-          'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
-        );
-      }
-    }
-
-    const attendingRuts = dto.attendingDependents?.map((d) => d.rut) || [];
-    if (attendingRuts.length > 0) {
-      // C. Validación: ¿Alguno de los acompañantes ya está registrado como ACOMPAÑANTE en otra reserva?
-      const duplicateDependentReservation = await this.reservationModel.findOne({
-        eventType: schedule.eventType,
-        state_reserve: true,
-        'attendingDependents.rut': { $in: attendingRuts },
-      });
-
-      if (duplicateDependentReservation) {
-        const duplicateRut = duplicateDependentReservation.attendingDependents.map((d) => d.rut).find((rut) => attendingRuts.includes(rut));
-        this.logger.warn(`Conflicto al encolar: El acompañante con RUT ${duplicateRut} ya tiene una reserva activa o concluida para el evento ${schedule.eventType}.`);
-        throw new ConflictException(
-          'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
-        );
-      }
-
-      // D. Validación: ¿Alguno de los acompañantes ya está registrado como TUTOR en otra reserva?
-      const matchingGuardians = await this.guardiansService.findManyByRuts(attendingRuts);
-      const dependentGuardianIds = matchingGuardians.map((g) => g._id);
-
-      if (dependentGuardianIds.length > 0) {
-        const dependentGuardianIdVariants = dependentGuardianIds.flatMap((id) => [id, id.toString()]);
-        const duplicateGuardianReservation = await this.reservationModel.collection.findOne({
-          eventType: schedule.eventType,
-          state_reserve: true,
-          guardianId: { $in: dependentGuardianIdVariants },
-        });
-
-        if (duplicateGuardianReservation) {
-          this.logger.warn(`Conflicto al encolar: Uno de los acompañantes ya es tutor y tiene una reserva activa.`);
-          throw new ConflictException(
-            'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
-          );
-        }
-      }
     }
 
     const jobName = 'process-single-reservation';
@@ -1011,57 +823,9 @@ export class ReservationsService {
 
     const attendingDependentsCount = dto.attendingDependents.length;
 
-    const attendingRuts = dto.attendingDependents.map((dependent) => dependent.rut);
-    const uniqueAttendingRuts = new Set(attendingRuts);
-    if (uniqueAttendingRuts.size !== attendingRuts.length) {
-      this.logger.warn(`RUTs duplicados en la reserva para guardianId=${guardianId}.`);
-      throw new BadRequestException('No se permiten RUTs duplicados en asistentes.');
-    }
-
-    // Ya no se requiere validar que los acompañantes pertenezcan rígidamente al inscrito.
-    // Esta validación restrictiva ha sido removida para flexibilizar grupos familiares.
-
     if (attendingDependentsCount > schedule.maxDependentsPerReservation) {
       this.logger.warn(`Exceso de cargas para guardianId=${guardianId} en scheduleId=${dto.scheduleId}.`);
       throw new BadRequestException(`Máximo ${schedule.maxDependentsPerReservation} cargas permitidas.`);
-    }
-
-    if (dto.metadata?.eventType === 'patines') {
-      const patines = dto.metadata.patines;
-      if (!Array.isArray(patines)) {
-        throw new BadRequestException('Para evento patines, metadata.patines es obligatorio.');
-      }
-
-      const patinesRuts: string[] = [];
-      for (const item of patines) {
-        if (!item || typeof item !== 'object') {
-          throw new BadRequestException('Cada elemento de metadata.patines debe ser un objeto valido.');
-        }
-
-        const { rut, shoeSize } = item as { rut?: unknown; shoeSize?: unknown };
-
-        if (typeof rut !== 'string' || rut.trim().length === 0) {
-          throw new BadRequestException('Cada elemento de metadata.patines debe incluir un rut valido.');
-        }
-
-        if (typeof shoeSize !== 'number' || !Number.isFinite(shoeSize) || shoeSize <= 0) {
-          throw new BadRequestException('Cada elemento de metadata.patines debe incluir shoeSize numerico mayor a 0.');
-        }
-
-        patinesRuts.push(rut);
-      }
-
-      const expectedRuts = [...attendingRuts];
-      if (dto.guardianParticipates) {
-        expectedRuts.push(guardian.rut);
-      }
-
-      const uniquePatinesRuts = new Set(patinesRuts);
-      const hasExactPatinesMatch = patinesRuts.length === expectedRuts.length && uniquePatinesRuts.size === patinesRuts.length && expectedRuts.every((rut) => uniquePatinesRuts.has(rut));
-
-      if (!hasExactPatinesMatch) {
-        throw new BadRequestException('metadata.patines debe coincidir 1:1 con los asistentes (incluyendo al inscrito si participa) por RUT.');
-      }
     }
 
     const spotsToConsume = (dto.guardianParticipates ? 1 : 0) + attendingDependentsCount;
@@ -1109,67 +873,6 @@ export class ReservationsService {
           throw new ConflictException(
             'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
           );
-        }
-
-        // B. Validación: ¿El tutor (si participa) ya está registrado como ACOMPAÑANTE en otra reserva?
-        if (dto.guardianParticipates) {
-          const tutorRegisteredAsDependent = await this.reservationModel
-            .exists({
-              eventType: scheduleInTx.eventType,
-              state_reserve: true,
-              'attendingDependents.rut': guardian.rut,
-            })
-            .session(session);
-
-          if (tutorRegisteredAsDependent) {
-            this.logger.warn(`Conflicto: El tutor ${guardian.rut} ya participa como acompañante en otra reserva.`);
-            throw new ConflictException(
-              'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
-            );
-          }
-        }
-
-        // Validar en la transacción que ningún acompañante ya tenga una reserva activa o concluida para el mismo evento
-        if (attendingRuts.length > 0) {
-          // C. Validación: ¿Alguno de los acompañantes ya está registrado como ACOMPAÑANTE en otra reserva?
-          const duplicateDependentReservation = await this.reservationModel
-            .findOne({
-              eventType: scheduleInTx.eventType,
-              state_reserve: true,
-              'attendingDependents.rut': { $in: attendingRuts },
-            })
-            .session(session);
-
-          if (duplicateDependentReservation) {
-            const duplicateRut = duplicateDependentReservation.attendingDependents.map((d) => d.rut).find((rut) => attendingRuts.includes(rut));
-            this.logger.warn(`Conflicto: El acompañante con RUT ${duplicateRut} ya tiene una reserva activa o concluida para el evento ${scheduleInTx.eventType}.`);
-            throw new ConflictException(
-              'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
-            );
-          }
-
-          // D. Validación: ¿Alguno de los acompañantes ya está registrado como TUTOR en otra reserva?
-          const matchingGuardians = await this.guardiansService.findManyByRuts(attendingRuts);
-          const dependentGuardianIds = matchingGuardians.map((g) => g._id);
-
-          if (dependentGuardianIds.length > 0) {
-            const dependentGuardianIdVariants = dependentGuardianIds.flatMap((id) => [id, id.toString()]);
-            const duplicateGuardianReservation = await this.reservationModel.collection.findOne(
-              {
-                eventType: scheduleInTx.eventType,
-                state_reserve: true,
-                guardianId: { $in: dependentGuardianIdVariants },
-              },
-              { session },
-            );
-
-            if (duplicateGuardianReservation) {
-              this.logger.warn(`Conflicto: Uno de los acompañantes ya es tutor y tiene una reserva activa.`);
-              throw new ConflictException(
-                'Uno o más RUN de esta reserva ya fueron registrados previamente para esta actividad.\n\nTe recordamos que cada persona puede participar *solo una vez por evento*, para que más vecinos tengan la oportunidad de vivir esta experiencia.',
-              );
-            }
-          }
         }
 
         const updatedScheduleInTx = await this.scheduleModel.findOneAndUpdate(
@@ -1237,7 +940,7 @@ export class ReservationsService {
     this.logger.log(`Reserva creada exitosamente: reservationId=${finalReservation._id}`);
     await this.updateEventIdentityCounters({
       eventType: finalReservation.eventType || '',
-      ruts: [guardian.rut, ...dto.attendingDependents.map((dep) => dep.rut)],
+      ruts: [guardian.rut],
       email: guardian.email,
       phone: guardian.phone,
       delta: 1,
@@ -1276,7 +979,7 @@ export class ReservationsService {
   private async sendReservationConfirmationNotifications(
     guardian: { name: string; email: string; phone: string; rut: string },
     startTime: Date,
-    attendingDependents: Array<{ name: string; rut: string; age?: number }>,
+    attendingDependents: Array<{ name: string; age?: number }>,
     reservationId: string,
     eventType?: string,
   ) {
@@ -1310,7 +1013,7 @@ export class ReservationsService {
     // 2. Integrantes del WhatsApp (Apoderado al inicio)
     const listItems: string[] = [`- ${guardian.name} (${guardian.rut})`];
     attendingDependents.forEach((dep) => {
-      listItems.push(`- ${dep.name} (${dep.rut})`);
+      listItems.push(`- ${dep.name}${dep.age ? ` (Edad: ${dep.age} años)` : ''}`);
     });
     const companionsText = listItems.join('\n');
 
@@ -1805,7 +1508,7 @@ export class ReservationsService {
                   if (deps.length > 0) {
                     let html = '<ul>';
                     deps.forEach(function(d) {
-                      html += '<li><strong>' + d.name + '</strong> (' + d.rut + ')</li>';
+                      html += '<li><strong>' + d.name + '</strong>' + (d.age ? ' (Edad: ' + d.age + ' años)' : '') + '</li>';
                     });
                     html += '</ul>';
                     container.innerHTML = html;

@@ -5,12 +5,8 @@ export class AttendingDependentDto {
   @IsString()
   name: string;
 
-  @IsString()
-  rut: string;
-
-  @IsOptional()
   @IsNumber()
-  age?: number;
+  age: number;
 }
 
 export class CreateReservationDto {

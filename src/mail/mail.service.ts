@@ -108,7 +108,7 @@ export class MailService {
     email: string,
     guardianName: string,
     scheduleDateTime: string,
-    companions: Array<{ name: string; rut: string; age?: number }>,
+    companions: Array<{ name: string; rut?: string; age?: number }>,
     reservationId: string,
     qrBuffer: Buffer,
     eventType?: string,
@@ -149,13 +149,15 @@ export class MailService {
         (companion) => `
       <li style="margin-bottom: 6px; list-style-type: none; display: flex; align-items: center;">
         <span style="margin-right: 8px;">👤</span>
-        <strong>${companion.name}</strong> ${companion.rut ? `(${companion.rut})` : ''}
+        <strong>${companion.name}</strong> ${companion.rut ? `(${companion.rut})` : companion.age ? `(Edad: ${companion.age} años)` : ''}
       </li>
     `,
       )
       .join('');
 
-    const companionsText = companions.map((companion) => `- ${companion.name} (${companion.rut})`).join('\n');
+    const companionsText = companions
+      .map((companion) => `- ${companion.name}${companion.rut ? ` (${companion.rut})` : companion.age ? ` (Edad: ${companion.age} años)` : ''}`)
+      .join('\n');
 
     const emailContent = `
       <div style="background-color: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; padding: 18px; margin-bottom: 25px;">
