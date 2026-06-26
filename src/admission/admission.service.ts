@@ -292,7 +292,7 @@ export class AdmissionService {
     const effectiveWriters = Math.max(1, Math.floor(writersActive * 0.5));
     const releaseRate = writersActive > 0 ? effectiveWriters / conservativeAvg : 0.1;
     const safeRate = Math.max(releaseRate, 0.1);
-    return Math.ceil(position / safeRate);
+    return Math.ceil(position / safeRate) + this.waitlistSessionTtlSec;
   }
 
   async enter(eventTypeInput: string, requestId?: string): Promise<AdmissionEnterResult> {
