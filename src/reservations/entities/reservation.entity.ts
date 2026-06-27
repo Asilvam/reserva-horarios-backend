@@ -6,8 +6,8 @@ export class AttendingDependent {
   @Prop({ required: true })
   name: string;
 
-  @Prop({ required: true })
-  age: number;
+  @Prop({ required: false })
+  age?: number;
 }
 
 export const AttendingDependentSchema = SchemaFactory.createForClass(AttendingDependent);
